@@ -11,42 +11,77 @@ enum VoceDesign {
         }))
     }
 
-    static let accent = Color(red: 0.118, green: 0.565, blue: 1.0) // #1E90FF
+    // Monet accent palette (from the app icon — used sparingly for color pops)
+    static let wheat = Color(red: 0.82, green: 0.74, blue: 0.52)        // golden wheat highlight
+    static let sage = Color(red: 0.58, green: 0.68, blue: 0.52)         // soft sage green
+    static let skyBlue = Color(red: 0.62, green: 0.78, blue: 0.90)      // light impressionist sky
+    static let lavender = Color(red: 0.72, green: 0.70, blue: 0.84)     // soft purple haze
+    static let roseLight = Color(red: 0.86, green: 0.74, blue: 0.72)    // soft pinkish warmth
+
+    // Primary accent: bright sky cerulean (Monet's Water Lilies sky)
+    static let accent = Color(red: 0.32, green: 0.60, blue: 0.82)       // #5299D1
+    static let accentSecondary = skyBlue
+
+    // Clean glass surfaces — light, cool, airy
     static let background = adaptive(
-        light: Color(red: 0.98, green: 0.98, blue: 0.98),       // #FAFAFA
-        dark: Color(red: 0.11, green: 0.11, blue: 0.12)          // #1C1C1E
+        light: Color(red: 0.965, green: 0.970, blue: 0.980),            // cool near-white
+        dark: Color(red: 0.09, green: 0.09, blue: 0.11)                 // deep cool charcoal
     )
     static let surface = adaptive(
-        light: .white,
-        dark: Color(red: 0.17, green: 0.17, blue: 0.18)          // #2C2C2E
+        light: Color.white.opacity(0.88),
+        dark: Color(red: 0.18, green: 0.19, blue: 0.21).opacity(0.90)
     )
     static let surfaceSecondary = adaptive(
-        light: Color(red: 0.961, green: 0.961, blue: 0.961),     // #F5F5F5
-        dark: Color(red: 0.227, green: 0.227, blue: 0.235)       // #3A3A3C
+        light: Color.white.opacity(0.80),
+        dark: Color(red: 0.21, green: 0.22, blue: 0.24).opacity(0.86)
+    )
+    static let surfaceSolid = adaptive(
+        light: Color(red: 0.972, green: 0.976, blue: 0.985),
+        dark: Color(red: 0.16, green: 0.17, blue: 0.19)
+    )
+    static let windowBackground = adaptive(
+        light: Color(red: 0.952, green: 0.960, blue: 0.972),
+        dark: Color(red: 0.115, green: 0.12, blue: 0.135)
     )
     static let textPrimary = adaptive(
-        light: Color(red: 0.102, green: 0.102, blue: 0.102),     // #1A1A1A
-        dark: Color(red: 0.922, green: 0.922, blue: 0.922)       // #EBEBEB
+        light: Color(red: 0.12, green: 0.13, blue: 0.15),               // cool near-black
+        dark: Color(red: 0.93, green: 0.94, blue: 0.95)                 // cool off-white
     )
     static let textSecondary = adaptive(
-        light: Color(red: 0.557, green: 0.557, blue: 0.576),     // #8E8E93
-        dark: Color(red: 0.596, green: 0.596, blue: 0.616)       // #98989D
+        light: Color(red: 0.44, green: 0.46, blue: 0.50),               // cool mid-grey
+        dark: Color(red: 0.58, green: 0.60, blue: 0.64)                 // cool light-grey
     )
     static let border = adaptive(
-        light: Color(red: 0.898, green: 0.898, blue: 0.918),     // #E5E5EA
-        dark: Color(red: 0.282, green: 0.282, blue: 0.290)       // #48484A
+        light: Color.black.opacity(0.06),                                // very subtle cool border
+        dark: Color.white.opacity(0.10)
     )
 
-    // Semantic colors (Apple HIG)
-    static let success = Color(red: 0.20, green: 0.78, blue: 0.35) // #34C759
-    static let successBackground = success.opacity(0.15)
-    static let successBorder = success.opacity(0.3)
-    static let warning = Color(red: 1.0, green: 0.58, blue: 0.0) // #FF9500
-    static let warningBackground = warning.opacity(0.15)
-    static let warningBorder = warning.opacity(0.3)
-    static let error = Color(red: 1.0, green: 0.23, blue: 0.19) // #FF3B30
-    static let errorBackground = error.opacity(0.15)
-    static let errorBorder = error.opacity(0.2)
+    // Semantic colors (clean and modern, lightly tinted)
+    static let success = Color(red: 0.30, green: 0.70, blue: 0.46)      // #4DB375  fresh green
+    static let successBackground = success.opacity(0.10)
+    static let successBorder = success.opacity(0.20)
+    static let warning = Color(red: 0.90, green: 0.68, blue: 0.25)      // #E6AD40  warm gold
+    static let warningBackground = warning.opacity(0.10)
+    static let warningBorder = warning.opacity(0.20)
+    static let error = Color(red: 0.88, green: 0.35, blue: 0.32)        // #E05952  soft red
+    static let errorBackground = error.opacity(0.08)
+    static let errorBorder = error.opacity(0.18)
+
+    // MARK: - Gradients (Monet-inspired)
+
+    /// Accent gradient for the mic button and highlights
+    static let accentGradient = LinearGradient(
+        colors: [accent, skyBlue],
+        startPoint: .topLeading,
+        endPoint: .bottomTrailing
+    )
+
+    /// Warm glow gradient for recording state
+    static let recordingGradient = LinearGradient(
+        colors: [accent, lavender, skyBlue],
+        startPoint: .topLeading,
+        endPoint: .bottomTrailing
+    )
 
     // MARK: - Typography
 
@@ -70,6 +105,9 @@ enum VoceDesign {
     static let opacityBorder: Double = 0.3
     static let opacityHover: Double = 0.08
     static let opacityGlowMax: Double = 0.8
+    static let opacityGlass: Double = 0.70
+    static let opacityGlassBorder: Double = 0.18
+    static let opacityWindowGlass: Double = 0.52
 
     // MARK: - Spacing
 
@@ -85,9 +123,9 @@ enum VoceDesign {
     // MARK: - Radii
 
     static let radiusTiny: CGFloat = 2
-    static let radiusSmall: CGFloat = 8
-    static let radiusMedium: CGFloat = 12
-    static let radiusLarge: CGFloat = 16
+    static let radiusSmall: CGFloat = 10
+    static let radiusMedium: CGFloat = 14
+    static let radiusLarge: CGFloat = 20
     static let radiusPill: CGFloat = 999
 
     // MARK: - Border Widths
@@ -121,17 +159,17 @@ enum VoceDesign {
             case .none:
                 return ShadowStyle(color: .clear, radius: 0, x: 0, y: 0)
             case .sm:
-                return ShadowStyle(color: .black.opacity(0.04), radius: 2, x: 0, y: 1)
+                return ShadowStyle(color: .black.opacity(0.04), radius: 3, x: 0, y: 1)
             case .md:
-                return ShadowStyle(color: .black.opacity(0.06), radius: 4, x: 0, y: 2)
+                return ShadowStyle(color: .black.opacity(0.06), radius: 6, x: 0, y: 2)
             case .lg:
-                return ShadowStyle(color: .black.opacity(0.10), radius: 8, x: 0, y: 4)
+                return ShadowStyle(color: .black.opacity(0.08), radius: 10, x: 0, y: 4)
             case .xl:
-                return ShadowStyle(color: .black.opacity(0.15), radius: 12, x: 0, y: 6)
+                return ShadowStyle(color: .black.opacity(0.12), radius: 16, x: 0, y: 6)
             case .recording:
-                return ShadowStyle(color: VoceDesign.accent.opacity(0.3), radius: 12, x: 0, y: 2)
+                return ShadowStyle(color: VoceDesign.accent.opacity(0.30), radius: 16, x: 0, y: 2)
             case .idle:
-                return ShadowStyle(color: .black.opacity(0.08), radius: 6, x: 0, y: 2)
+                return ShadowStyle(color: .black.opacity(0.06), radius: 8, x: 0, y: 2)
             }
         }
 
@@ -140,32 +178,31 @@ enum VoceDesign {
             case .none:
                 return ShadowStyle(color: .clear, radius: 0, x: 0, y: 0)
             case .sm:
-                return ShadowStyle(color: .black.opacity(0.20), radius: 2, x: 0, y: 1)
+                return ShadowStyle(color: .black.opacity(0.25), radius: 3, x: 0, y: 1)
             case .md:
-                return ShadowStyle(color: .black.opacity(0.25), radius: 4, x: 0, y: 2)
+                return ShadowStyle(color: .black.opacity(0.30), radius: 6, x: 0, y: 2)
             case .lg:
-                return ShadowStyle(color: .black.opacity(0.30), radius: 8, x: 0, y: 4)
+                return ShadowStyle(color: .black.opacity(0.35), radius: 10, x: 0, y: 4)
             case .xl:
-                return ShadowStyle(color: .black.opacity(0.40), radius: 12, x: 0, y: 6)
+                return ShadowStyle(color: .black.opacity(0.45), radius: 16, x: 0, y: 6)
             case .recording:
-                return ShadowStyle(color: VoceDesign.accent.opacity(0.3), radius: 12, x: 0, y: 2)
+                return ShadowStyle(color: VoceDesign.accent.opacity(0.35), radius: 16, x: 0, y: 2)
             case .idle:
-                return ShadowStyle(color: .black.opacity(0.25), radius: 6, x: 0, y: 2)
+                return ShadowStyle(color: .black.opacity(0.30), radius: 8, x: 0, y: 2)
             }
         }
     }
 
     // MARK: - Component Sizes
 
-    static let micButtonGlowSize: CGFloat = 88
-    static let micButtonSize: CGFloat = 72
+    static let micButtonGlowSize: CGFloat = 92
+    static let micButtonSize: CGFloat = 74
     static let micButtonGlowScale: CGFloat = 1.2
     static let dividerHeight: CGFloat = 1
     static let windowMinWidth: CGFloat = 600
     static let windowIdealWidth: CGFloat = 620
     static let windowMinHeight: CGFloat = 640
     static let windowIdealHeight: CGFloat = 680
-    static let pickerWidth: CGFloat = 260
     static let searchBarMaxWidth: CGFloat = 220
     static let insertionListHeight: CGFloat = 120
 }
@@ -189,41 +226,76 @@ struct ShadowModifier: ViewModifier {
     }
 }
 
-// MARK: - Card Style
+// MARK: - Glass Card Style
 
 struct CardStyle: ViewModifier {
     var elevation: VoceDesign.ShadowLevel = .md
     var padding: CGFloat = VoceDesign.md
 
+    @Environment(\.colorScheme) private var colorScheme
+
     func body(content: Content) -> some View {
         content
             .padding(padding)
-            .background(VoceDesign.surface)
+            .background {
+                RoundedRectangle(cornerRadius: VoceDesign.radiusMedium)
+                    .fill(VoceDesign.surface)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: VoceDesign.radiusMedium)
+                            .fill(
+                                colorScheme == .dark
+                                    ? AnyShapeStyle(.regularMaterial.opacity(0.20))
+                                    : AnyShapeStyle(.regularMaterial.opacity(0.35))
+                            )
+                    )
+            }
             .clipShape(RoundedRectangle(cornerRadius: VoceDesign.radiusMedium))
             .overlay(
                 RoundedRectangle(cornerRadius: VoceDesign.radiusMedium)
-                    .stroke(VoceDesign.border, lineWidth: VoceDesign.borderNormal)
+                    .stroke(
+                        colorScheme == .dark
+                            ? Color.white.opacity(0.06)
+                            : Color.white.opacity(0.50),
+                        lineWidth: VoceDesign.borderThin
+                    )
             )
             .shadowStyle(elevation)
     }
 }
 
-// MARK: - Interactive Card Style
+// MARK: - Interactive Glass Card Style
 
 struct InteractiveCardStyle: ViewModifier {
     var elevation: VoceDesign.ShadowLevel = .md
     var padding: CGFloat = VoceDesign.md
 
     @State private var isHovering = false
+    @Environment(\.colorScheme) private var colorScheme
 
     func body(content: Content) -> some View {
         content
             .padding(padding)
-            .background(VoceDesign.surface)
+            .background {
+                RoundedRectangle(cornerRadius: VoceDesign.radiusMedium)
+                    .fill(isHovering ? VoceDesign.surface : VoceDesign.surfaceSecondary)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: VoceDesign.radiusMedium)
+                            .fill(
+                                colorScheme == .dark
+                                    ? AnyShapeStyle(.regularMaterial.opacity(isHovering ? 0.24 : 0.18))
+                                    : AnyShapeStyle(.regularMaterial.opacity(isHovering ? 0.40 : 0.30))
+                            )
+                    )
+            }
             .clipShape(RoundedRectangle(cornerRadius: VoceDesign.radiusMedium))
             .overlay(
                 RoundedRectangle(cornerRadius: VoceDesign.radiusMedium)
-                    .stroke(VoceDesign.border, lineWidth: VoceDesign.borderNormal)
+                    .stroke(
+                        colorScheme == .dark
+                            ? Color.white.opacity(isHovering ? 0.10 : 0.06)
+                            : Color.white.opacity(isHovering ? 0.60 : 0.50),
+                        lineWidth: VoceDesign.borderThin
+                    )
             )
             .shadowStyle(isHovering ? .lg : elevation)
             .scaleEffect(isHovering ? 1.005 : 1.0)
@@ -294,5 +366,21 @@ extension View {
 
     func interactiveCardStyle(elevation: VoceDesign.ShadowLevel = .md, padding: CGFloat = VoceDesign.md) -> some View {
         modifier(InteractiveCardStyle(elevation: elevation, padding: padding))
+    }
+
+    func glassBackground(cornerRadius: CGFloat = VoceDesign.radiusMedium) -> some View {
+        self
+            .background {
+                RoundedRectangle(cornerRadius: cornerRadius)
+                    .fill(VoceDesign.surface)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: cornerRadius)
+                            .fill(VoceDesign.surfaceSolid.opacity(0.18))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: cornerRadius)
+                            .fill(.regularMaterial.opacity(VoceDesign.opacityWindowGlass))
+                    )
+            }
     }
 }

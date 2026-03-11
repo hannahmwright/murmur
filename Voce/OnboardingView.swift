@@ -44,7 +44,20 @@ struct OnboardingView: View {
             minHeight: VoceDesign.windowMinHeight,
             idealHeight: VoceDesign.windowIdealHeight
         )
-        .background(VoceDesign.background)
+        .background {
+            ZStack {
+                VoceDesign.windowBackground
+                LinearGradient(
+                    colors: [
+                        VoceDesign.skyBlue.opacity(0.10),
+                        Color.clear,
+                        VoceDesign.roseLight.opacity(0.08)
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            }
+        }
         .animation(
             reduceMotion ? nil : .spring(response: 0.4, dampingFraction: 0.85, blendDuration: 0),
             value: currentStep
@@ -91,7 +104,7 @@ struct OnboardingView: View {
 
             Image(systemName: "mic.fill")
                 .font(.system(size: 72))
-                .foregroundStyle(VoceDesign.accent)
+                .foregroundStyle(VoceDesign.accentGradient)
                 .accessibilityHidden(true)
 
             VStack(spacing: VoceDesign.sm) {
@@ -342,7 +355,7 @@ struct OnboardingView: View {
                 .font(VoceDesign.bodyEmphasis())
                 .foregroundStyle(.white)
                 .frame(width: VoceDesign.xl, height: VoceDesign.xl)
-                .background(VoceDesign.accent)
+                .background(VoceDesign.accentGradient)
                 .clipShape(Circle())
                 .accessibilityHidden(true)
 

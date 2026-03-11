@@ -8,6 +8,7 @@ struct MicButton: View {
 
     @State private var glowAnimating = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         Group {
@@ -33,10 +34,16 @@ struct MicButton: View {
     private var micButton: some View {
         Button(action: onTap) {
             ZStack {
-                // Glow ring (visible only when recording)
+                // Outer glow ring (visible only when recording) — Monet-inspired gradient
                 if isRecording {
                     Circle()
-                        .stroke(VoceDesign.accent, lineWidth: VoceDesign.borderHeavy)
+                        .stroke(
+                            AngularGradient(
+                                colors: [VoceDesign.accent, VoceDesign.lavender, VoceDesign.skyBlue, VoceDesign.accent],
+                                center: .center
+                            ),
+                            lineWidth: VoceDesign.borderHeavy
+                        )
                         .frame(width: VoceDesign.micButtonGlowSize, height: VoceDesign.micButtonGlowSize)
                         .opacity(reduceMotion ? VoceDesign.opacityDisabled : (glowAnimating ? VoceDesign.opacityGlowMax : VoceDesign.opacityMuted))
                         .scaleEffect(reduceMotion ? 1.0 : (glowAnimating ? VoceDesign.micButtonGlowScale : 1.0))
@@ -46,18 +53,24 @@ struct MicButton: View {
                         )
                 }
 
-                // Main circle
+                // Main circle — glass effect when idle, gradient when recording
                 Circle()
-                    .fill(isRecording ? VoceDesign.accent : VoceDesign.surface)
+                    .fill(mainCircleFillStyle)
                     .frame(width: VoceDesign.micButtonSize, height: VoceDesign.micButtonSize)
-                    .shadowStyle(isRecording ? .recording : .idle)
+                    .overlay(
+                        Circle()
+                            .fill(mainCircleOverlayStyle)
+                    )
                     .overlay(
                         Circle()
                             .stroke(
-                                isRecording ? Color.clear : VoceDesign.border,
-                                lineWidth: VoceDesign.borderNormal
+                                isRecording
+                                    ? Color.clear
+                                    : (colorScheme == .dark ? Color.white.opacity(0.08) : Color.white.opacity(0.50)),
+                                lineWidth: VoceDesign.borderThin
                             )
                     )
+                    .shadowStyle(isRecording ? .recording : .idle)
                     .animation(
                         reduceMotion ? nil : .spring(response: VoceDesign.animationNormal, dampingFraction: 0.8),
                         value: isRecording
@@ -88,6 +101,23 @@ struct MicButton: View {
         .accessibilityLabel(micAccessibilityLabel)
         .accessibilityHint(micAccessibilityHint)
         .accessibilityValue(micAccessibilityValue)
+    }
+
+    private var mainCircleFillStyle: AnyShapeStyle {
+        if isRecording {
+            return AnyShapeStyle(VoceDesign.accentGradient)
+        }
+
+        return AnyShapeStyle(VoceDesign.surface)
+    }
+
+    private var mainCircleOverlayStyle: AnyShapeStyle {
+        if isRecording {
+            return AnyShapeStyle(Color.clear)
+        }
+
+        let materialOpacity = colorScheme == .dark ? 0.18 : 0.30
+        return AnyShapeStyle(.regularMaterial.opacity(materialOpacity))
     }
 
     private var micAccessibilityLabel: String {

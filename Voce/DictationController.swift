@@ -284,6 +284,42 @@ final class DictationController: ObservableObject {
         }
     }
 
+    func copyCurrentTranscript() {
+        let transcript = currentTranscriptText
+        guard !transcript.isEmpty else {
+            status = "No transcript available yet."
+            return
+        }
+
+        Task {
+            do {
+                try await clipboardService.setString(transcript)
+                status = "Selected transcript copied."
+            } catch {
+                status = "Copy failed"
+                lastError = error.localizedDescription
+            }
+        }
+    }
+
+    func pasteCurrentTranscript() {
+        let transcript = currentTranscriptText
+        guard !transcript.isEmpty else {
+            status = "No transcript available yet."
+            return
+        }
+
+        Task {
+            do {
+                try await clipboardService.setString(transcript)
+                status = "Transcript copied to clipboard. Paste with Cmd+V."
+            } catch {
+                status = "Paste failed"
+                lastError = error.localizedDescription
+            }
+        }
+    }
+
     func deleteEntry(_ entry: TranscriptEntry) {
         Task {
             do {
@@ -374,7 +410,8 @@ final class DictationController: ObservableObject {
     func copyEntry(_ entry: TranscriptEntry) {
         Task {
             do {
-                try await clipboardService.setString(entry.cleanText)
+                let text = entry.cleanText.isEmpty ? entry.rawText : entry.cleanText
+                try await clipboardService.setString(text)
                 status = "Selected transcript copied."
             } catch {
                 status = "Copy failed"
@@ -387,6 +424,18 @@ final class DictationController: ObservableObject {
         let all = await historyStore.recent(limit: 500)
         let thirtyDaysAgo = Date().addingTimeInterval(-30 * 24 * 60 * 60)
         recentEntries = all.filter { $0.createdAt >= thirtyDaysAgo }
+    }
+
+    private var currentTranscriptText: String {
+        if !lastTranscript.isEmpty {
+            return lastTranscript
+        }
+
+        if let entry = recentEntries.first {
+            return entry.cleanText.isEmpty ? entry.rawText : entry.cleanText
+        }
+
+        return ""
     }
 
     private func apply(transition: RecordingTransition) {

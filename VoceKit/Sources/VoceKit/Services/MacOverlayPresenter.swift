@@ -27,7 +27,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
     private var wasHidden = true
     private var anchorSnapshot: AnchorSnapshot?
 
-    private static let dotBlue = NSColor(red: 0.118, green: 0.565, blue: 1.0, alpha: 1.0)
+    private static let dotBlue = NSColor(red: 0.32, green: 0.60, blue: 0.82, alpha: 1.0)
 
     private var reduceMotion: Bool {
         NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
@@ -177,24 +177,35 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         panel.ignoresMouseEvents = true
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .ignoresCycle]
 
-        let content = NSView(frame: contentRect)
-        content.wantsLayer = true
-        content.layer?.cornerRadius = 22
-        content.layer?.masksToBounds = false
-        content.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
-        content.layer?.borderWidth = 1
-        content.layer?.borderColor = NSColor.separatorColor.cgColor
-        content.layer?.shadowColor = NSColor.black.withAlphaComponent(0.08).cgColor
-        content.layer?.shadowOffset = CGSize(width: 0, height: -2)
-        content.layer?.shadowRadius = 16
-        content.layer?.shadowOpacity = 1
+        // Glass background with vibrancy
+        let vibrancy = NSVisualEffectView(frame: contentRect)
+        vibrancy.material = .hudWindow
+        vibrancy.blendingMode = .behindWindow
+        vibrancy.state = .active
+        vibrancy.wantsLayer = true
+        vibrancy.layer?.cornerRadius = 22
+        vibrancy.layer?.masksToBounds = true
+        vibrancy.layer?.backgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.88).cgColor
+
+        // Outer container for shadow + border (can't put shadow on clipped view)
+        let container = NSView(frame: contentRect)
+        container.wantsLayer = true
+        container.layer?.cornerRadius = 22
+        container.layer?.masksToBounds = false
+        container.layer?.borderWidth = 0.5
+        container.layer?.borderColor = NSColor.white.withAlphaComponent(0.25).cgColor
+        container.layer?.shadowColor = NSColor.black.withAlphaComponent(0.10).cgColor
+        container.layer?.shadowOffset = CGSize(width: 0, height: -2)
+        container.layer?.shadowRadius = 20
+        container.layer?.shadowOpacity = 1
+        container.addSubview(vibrancy)
 
         // Status dot
         let dot = NSView(frame: NSRect(x: 16, y: 16, width: 12, height: 12))
         dot.wantsLayer = true
         dot.layer?.cornerRadius = 6
         dot.layer?.backgroundColor = Self.dotBlue.cgColor
-        content.addSubview(dot)
+        vibrancy.addSubview(dot)
         self.statusDot = dot
 
         // Status text
@@ -204,15 +215,15 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         label.alignment = .left
         label.lineBreakMode = .byTruncatingTail
         label.translatesAutoresizingMaskIntoConstraints = false
-        content.addSubview(label)
+        vibrancy.addSubview(label)
 
         NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 36),
-            label.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -16),
-            label.centerYAnchor.constraint(equalTo: content.centerYAnchor)
+            label.leadingAnchor.constraint(equalTo: vibrancy.leadingAnchor, constant: 36),
+            label.trailingAnchor.constraint(equalTo: vibrancy.trailingAnchor, constant: -16),
+            label.centerYAnchor.constraint(equalTo: vibrancy.centerYAnchor)
         ])
 
-        panel.contentView = content
+        panel.contentView = container
         self.window = panel
         self.textField = label
     }

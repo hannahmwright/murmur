@@ -37,11 +37,10 @@ struct PermissionStatusCard: View {
             actionButton
         }
         .padding(VoceDesign.md)
-        .background(VoceDesign.surface)
-        .clipShape(RoundedRectangle(cornerRadius: VoceDesign.radiusSmall))
+        .glassBackground(cornerRadius: VoceDesign.radiusSmall)
         .overlay(
             RoundedRectangle(cornerRadius: VoceDesign.radiusSmall)
-                .stroke(statusBorderColor, lineWidth: VoceDesign.borderNormal)
+                .stroke(statusBorderColor, lineWidth: VoceDesign.borderThin)
         )
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(title), \(status.rawValue). \(description)")

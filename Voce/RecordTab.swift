@@ -87,14 +87,18 @@ struct RecordTab: View {
 
             Spacer()
 
-            // Last transcript card
-            lastTranscriptCard
-                .animation(
-                    reduceMotion ? nil : .easeInOut(duration: VoceDesign.animationNormal),
-                    value: controller.lastTranscript
-                )
+            // Last transcript card or empty hint
+            if controller.lastTranscript.isEmpty {
+                emptyHintView
+            } else {
+                lastTranscriptCard
+            }
         }
         .padding(.vertical, VoceDesign.lg)
+        .animation(
+            reduceMotion ? nil : .easeInOut(duration: VoceDesign.animationNormal),
+            value: controller.lastTranscript
+        )
     }
 
     private func animateErrorBannerUpdate() {
@@ -124,6 +128,8 @@ struct RecordTab: View {
             || combined.contains("microphone")
             || combined.contains("input monitoring")
     }
+
+    // MARK: - Error Banner
 
     private var errorBanner: some View {
         HStack(spacing: VoceDesign.sm) {
@@ -171,77 +177,119 @@ struct RecordTab: View {
             .accessibilityLabel("Dismiss error")
         }
         .padding(VoceDesign.md)
-        .background(VoceDesign.surface)
-        .clipShape(RoundedRectangle(cornerRadius: VoceDesign.radiusSmall))
+        .glassBackground(cornerRadius: VoceDesign.radiusSmall)
         .overlay(
             RoundedRectangle(cornerRadius: VoceDesign.radiusSmall)
                 .stroke(VoceDesign.errorBorder, lineWidth: VoceDesign.borderNormal)
         )
     }
 
-    private var lastTranscriptCard: some View {
-        VStack(alignment: .leading, spacing: VoceDesign.sm) {
-            HStack {
-                Text("Last Transcript")
-                    .font(VoceDesign.bodyEmphasis())
-                    .foregroundStyle(VoceDesign.textPrimary)
-                    .accessibilityAddTraits(.isHeader)
-                Spacer()
-                if !controller.lastTranscript.isEmpty {
-                    CopyButtonView(action: {
-                        if let entry = controller.recentEntries.first {
-                            controller.copyEntry(entry)
-                        }
-                    }, label: "Copy last transcript")
+    // MARK: - Empty Hint
 
-                    Button {
-                        controller.pasteLastTranscript()
-                    } label: {
-                        Image(systemName: "doc.on.clipboard.fill")
-                            .font(VoceDesign.caption())
-                            .foregroundStyle(VoceDesign.textSecondary)
-                    }
-                    .buttonStyle(.plain)
-                    .help("Paste")
-                    .accessibilityLabel("Paste last transcript")
-                }
-            }
-
-            if controller.lastTranscript.isEmpty {
-                Text(emptyStateHint)
-                    .font(VoceDesign.body())
+    private var emptyHintView: some View {
+        VStack(spacing: VoceDesign.sm) {
+            if controller.microphonePermissionStatus == .denied {
+                Label("Microphone access denied", systemImage: "mic.slash")
+                    .font(VoceDesign.caption())
+                    .foregroundStyle(VoceDesign.textSecondary)
+            } else if controller.microphonePermissionStatus == .unknown {
+                Label("Grant microphone access to start", systemImage: "mic.badge.plus")
+                    .font(VoceDesign.caption())
                     .foregroundStyle(VoceDesign.textSecondary)
             } else {
-                Text(controller.lastTranscript)
-                    .font(VoceDesign.body())
-                    .foregroundStyle(VoceDesign.textPrimary)
-                    .lineLimit(6)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                hotkeyHint
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(VoceDesign.md)
+        .glassBackground(cornerRadius: VoceDesign.radiusMedium)
+    }
+
+    private var hotkeyHint: some View {
+        HStack(spacing: VoceDesign.sm) {
+            let hotkeys = controller.preferences.hotkeys
+            if hotkeys.optionPressToTalkEnabled {
+                keyBadge("Option")
+                Text("hold to dictate")
+                    .font(VoceDesign.caption())
+                    .foregroundStyle(VoceDesign.textSecondary)
+            }
+            if hotkeys.optionPressToTalkEnabled, hotkeys.handsFreeGlobalKeyCode != nil {
+                Text("or")
+                    .font(VoceDesign.caption())
+                    .foregroundStyle(VoceDesign.textSecondary.opacity(0.6))
+            }
+            if let keyCode = hotkeys.handsFreeGlobalKeyCode {
+                keyBadge(keyLabel(for: keyCode))
+                Text("hands-free")
+                    .font(VoceDesign.caption())
+                    .foregroundStyle(VoceDesign.textSecondary)
+            }
+            if !hotkeys.optionPressToTalkEnabled && hotkeys.handsFreeGlobalKeyCode == nil {
+                Text("Set up a hotkey in Settings")
+                    .font(VoceDesign.caption())
+                    .foregroundStyle(VoceDesign.textSecondary)
+            }
+        }
+    }
+
+    private func keyBadge(_ label: String) -> some View {
+        Text(label)
+            .font(.system(size: 11, weight: .medium, design: .rounded))
+            .foregroundStyle(VoceDesign.textPrimary)
+            .padding(.horizontal, VoceDesign.sm)
+            .padding(.vertical, VoceDesign.xs)
+            .background(VoceDesign.surfaceSecondary)
+            .clipShape(RoundedRectangle(cornerRadius: VoceDesign.radiusSmall - 2))
+            .overlay(
+                RoundedRectangle(cornerRadius: VoceDesign.radiusSmall - 2)
+                    .stroke(VoceDesign.border, lineWidth: VoceDesign.borderThin)
+            )
+    }
+
+    // MARK: - Transcript Card
+
+    private var lastTranscriptCard: some View {
+        VStack(alignment: .leading, spacing: VoceDesign.sm) {
+            Text(controller.lastTranscript)
+                .font(VoceDesign.body())
+                .foregroundStyle(VoceDesign.textPrimary)
+                .lineLimit(6)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            // Action row
+            HStack(spacing: VoceDesign.md) {
+                Text("Last transcript")
+                    .font(VoceDesign.caption())
+                    .foregroundStyle(VoceDesign.textSecondary)
+
+                Spacer()
+
+                Button {
+                    controller.copyCurrentTranscript()
+                } label: {
+                    Label("Copy", systemImage: "doc.on.doc")
+                        .font(VoceDesign.caption())
+                        .foregroundStyle(VoceDesign.textSecondary)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Copy last transcript")
+
+                Button {
+                    controller.pasteCurrentTranscript()
+                } label: {
+                    Label("Paste", systemImage: "doc.on.clipboard")
+                        .font(VoceDesign.caption())
+                        .foregroundStyle(VoceDesign.accent)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Paste last transcript")
             }
         }
         .cardStyle()
     }
 
-    private var emptyStateHint: String {
-        if controller.microphonePermissionStatus == .denied {
-            return "Microphone access denied. Grant access in Settings to start dictating."
-        }
-        if controller.microphonePermissionStatus == .unknown {
-            return "Grant microphone access to start dictating."
-        }
-
-        let hotkeys = controller.preferences.hotkeys
-        if hotkeys.optionPressToTalkEnabled {
-            if let keyCode = hotkeys.handsFreeGlobalKeyCode {
-                return "Hold Option to dictate, or press \(keyLabel(for: keyCode)) for hands-free"
-            }
-            return "Hold Option to start dictating"
-        }
-        if let keyCode = hotkeys.handsFreeGlobalKeyCode {
-            return "Press \(keyLabel(for: keyCode)) to start hands-free dictation"
-        }
-        return "Configure a hotkey in Settings to start dictating"
-    }
+    // MARK: - Helpers
 
     private func keyLabel(for keyCode: UInt16) -> String {
         switch keyCode {
