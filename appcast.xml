@@ -3,6 +3,27 @@
   <channel>
     <title>Voce</title>
     <item>
+      <title>Version 0.4.0</title>
+      <sparkle:version>3</sparkle:version>
+      <sparkle:shortVersionString>0.4.0</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h2>Voce 0.4.0</h2>
+        <ul>
+          <li>Renamed from Murmur to Voce (from Sotto Voce)</li>
+          <li>New bundle identifier: io.voceapp.voce</li>
+          <li>All features from v0.3.0 carry forward</li>
+        </ul>
+      ]]></description>
+      <pubDate>Tue, 11 Mar 2026 01:15:00 +0000</pubDate>
+      <enclosure
+        url="https://github.com/hannahmwright/voce/releases/download/v0.4.0/Voce-0.4.0.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="g7of2WCaAmceVnmZ8HvTuG/5rZ4W2+ukfcPuBBjbJfF070+JjNbrA/Lss/QqoR8YEYIO9qsI2gUZHZYQw+PnAw=="
+        length="28033844"
+      />
+    </item>
+    <item>
       <title>Version 0.3.0</title>
       <sparkle:version>2</sparkle:version>
       <sparkle:shortVersionString>0.3.0</sparkle:shortVersionString>
