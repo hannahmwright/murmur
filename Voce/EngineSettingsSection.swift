@@ -21,7 +21,7 @@ struct EngineSettingsSection: View {
                 preferences.dictation.modelDirectoryPath = MoonshineModelPaths.defaultModelDirectoryPath(for: newArch)
             }
 
-            if MoonshineModelDownloader.isModelReady(preset: preferences.dictation.modelArch) {
+            if modelIsReady {
                 modelReadySection
             } else {
                 modelDownloadSection
@@ -60,6 +60,13 @@ struct EngineSettingsSection: View {
                 }
             }
         }
+    }
+
+    private var modelIsReady: Bool {
+        MoonshineModelPaths.missingFiles(
+            in: preferences.dictation.modelDirectoryPath,
+            preset: preferences.dictation.modelArch
+        ).isEmpty
     }
 
     private var modelDownloadSection: some View {

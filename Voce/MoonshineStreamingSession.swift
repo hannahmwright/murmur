@@ -36,6 +36,8 @@ final class MoonshineStreamingSession: @unchecked Sendable {
     /// Starts audio capture and streaming transcription.
     /// Must be called from the main thread.
     func start() throws {
+        try ensureMicrophonePermission()
+
         // Initialize Moonshine on the processing queue (synchronous).
         try processingQueue.sync {
             let t = try Transcriber(
@@ -46,12 +48,14 @@ final class MoonshineStreamingSession: @unchecked Sendable {
             try s.start()
             self.transcriber = t
             self.stream = s
+            self.pendingBuffers.removeAll(keepingCapacity: false)
+            self.isStopped = false
         }
 
         // Set up AVAudioEngine for mic capture.
         let engine = AVAudioEngine()
         let inputNode = engine.inputNode
-        let nativeFormat = inputNode.outputFormat(forBus: 0)
+        let inputFormat = inputNode.inputFormat(forBus: 0)
 
         // Converter: native mic format → 16 kHz mono float32.
         guard let targetFormat = AVAudioFormat(
@@ -63,10 +67,13 @@ final class MoonshineStreamingSession: @unchecked Sendable {
             throw MoonshineTranscriptionError.unsupportedAudioFormat
         }
 
-        let converter = AVAudioConverter(from: nativeFormat, to: targetFormat)
+        let needsConversion = inputFormat.sampleRate != targetFormat.sampleRate
+            || inputFormat.channelCount != targetFormat.channelCount
+            || inputFormat.commonFormat != targetFormat.commonFormat
+        let converter = needsConversion ? AVAudioConverter(from: inputFormat, to: targetFormat) : nil
 
         // Install tap – copy samples as fast as possible off the realtime thread.
-        inputNode.installTap(onBus: 0, bufferSize: 4_096, format: nativeFormat) { [weak self] buffer, _ in
+        inputNode.installTap(onBus: 0, bufferSize: 1_024, format: inputFormat) { [weak self] buffer, _ in
             guard let self else { return }
             let samples = self.convertBuffer(buffer, converter: converter, targetFormat: targetFormat)
             guard !samples.isEmpty else { return }
@@ -75,7 +82,20 @@ final class MoonshineStreamingSession: @unchecked Sendable {
             }
         }
 
-        try engine.start()
+        do {
+            try engine.start()
+        } catch {
+            inputNode.removeTap(onBus: 0)
+            processingQueue.sync {
+                stream?.close()
+                transcriber?.close()
+                stream = nil
+                transcriber = nil
+                pendingBuffers.removeAll(keepingCapacity: false)
+                isStopped = true
+            }
+            throw error
+        }
         self.audioEngine = engine
 
         // Drain buffered audio every 100 ms and feed to Moonshine.
@@ -90,36 +110,31 @@ final class MoonshineStreamingSession: @unchecked Sendable {
 
     /// Stops capture, finalises the transcript, and returns the result.
     /// Must be called from the main thread.
-    func stop() -> RawTranscript {
+    func stop() throws -> RawTranscript {
         tearDownAudio()
 
-        return processingQueue.sync {
-            isStopped = true
-
-            // Process any remaining audio.
-            drainBuffersUnsafe()
-
-            do {
-                try stream?.stop()
-                let transcript = try stream?.updateTranscription(
-                    flags: TranscribeStreamFlags.flagForceUpdate
-                )
+        return try processingQueue.sync {
+            defer {
                 stream?.close()
                 transcriber?.close()
                 stream = nil
                 transcriber = nil
+                pendingBuffers.removeAll(keepingCapacity: false)
+                isStopped = true
+            }
 
-                guard let transcript else {
-                    return RawTranscript(text: "")
-                }
-                return Self.buildRawTranscript(from: transcript)
-            } catch {
-                stream?.close()
-                transcriber?.close()
-                stream = nil
-                transcriber = nil
+            // Feed any buffered mic audio before closing the stream.
+            try drainBuffersUnsafe(allowAfterStop: true, shouldUpdateTranscript: true)
+
+            try stream?.stop()
+            let transcript = try stream?.updateTranscription(
+                flags: TranscribeStreamFlags.flagForceUpdate
+            )
+
+            guard let transcript else {
                 return RawTranscript(text: "")
             }
+            return Self.buildRawTranscript(from: transcript)
         }
     }
 
@@ -171,11 +186,16 @@ final class MoonshineStreamingSession: @unchecked Sendable {
     // MARK: - Buffer Drain (processingQueue)
 
     private func drainBuffers() {
-        drainBuffersUnsafe()
+        do {
+            try drainBuffersUnsafe(allowAfterStop: false, shouldUpdateTranscript: true)
+        } catch {
+            // Partial failures are acceptable during streaming.
+        }
     }
 
-    private func drainBuffersUnsafe() {
-        guard !pendingBuffers.isEmpty, !isStopped else { return }
+    private func drainBuffersUnsafe(allowAfterStop: Bool, shouldUpdateTranscript: Bool) throws {
+        guard !pendingBuffers.isEmpty else { return }
+        guard allowAfterStop || !isStopped else { return }
 
         let buffers = pendingBuffers
         pendingBuffers.removeAll(keepingCapacity: true)
@@ -183,22 +203,18 @@ final class MoonshineStreamingSession: @unchecked Sendable {
         let allSamples = buffers.flatMap { $0 }
         guard !allSamples.isEmpty else { return }
 
-        do {
-            try stream?.addAudio(allSamples, sampleRate: 16_000)
-            if let transcript = try stream?.updateTranscription() {
-                let text = transcript.lines
-                    .map(\.text)
-                    .joined(separator: " ")
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                if !text.isEmpty {
-                    let captured = text
-                    DispatchQueue.main.async { [weak self] in
-                        self?.onPartialText(captured)
-                    }
-                }
+        try stream?.addAudio(allSamples, sampleRate: 16_000)
+        guard shouldUpdateTranscript, let transcript = try stream?.updateTranscription() else { return }
+
+        let text = transcript.lines
+            .map(\.text)
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if !text.isEmpty {
+            let captured = text
+            DispatchQueue.main.async { [weak self] in
+                self?.onPartialText(captured)
             }
-        } catch {
-            // Partial failures are acceptable during streaming.
         }
     }
 
@@ -232,5 +248,28 @@ final class MoonshineStreamingSession: @unchecked Sendable {
             (transcript.lines.last.map { $0.startTime + $0.duration } ?? 0) * 1_000
         )
         return RawTranscript(text: text, segments: segments, durationMS: durationMS)
+    }
+
+    private func ensureMicrophonePermission() throws {
+        let permissionStatus = AVCaptureDevice.authorizationStatus(for: .audio)
+        if permissionStatus == .denied {
+            throw MoonshineTranscriptionError.microphonePermissionDenied
+        }
+
+        if permissionStatus == .notDetermined {
+            var permissionGranted = false
+            let semaphore = DispatchSemaphore(value: 0)
+
+            AVCaptureDevice.requestAccess(for: .audio) { granted in
+                permissionGranted = granted
+                semaphore.signal()
+            }
+
+            semaphore.wait()
+
+            if !permissionGranted {
+                throw MoonshineTranscriptionError.microphonePermissionDenied
+            }
+        }
     }
 }

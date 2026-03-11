@@ -5,6 +5,17 @@ import VoceKit
 
 @MainActor
 final class DictationController: ObservableObject {
+    private enum RecordingStartError: LocalizedError {
+        case microphonePermissionDenied
+
+        var errorDescription: String? {
+            switch self {
+            case .microphonePermissionDenied:
+                return "Microphone permission is required to start recording."
+            }
+        }
+    }
+
     @Published var status: String = "Idle"
     @Published var lastTranscript: String = ""
     @Published var lastError: String = ""
@@ -395,26 +406,30 @@ final class DictationController: ObservableObject {
             return
         }
 
-        status = mode == .handsFree ? "Hands-free listening..." : "Recording..."
+        status = "Checking microphone..."
         lastError = ""
-        isRecording = true
-        handsFreeOn = mode == .handsFree
-        menuBar.updateIcon(isRecording: true, handsFreeOn: mode == .handsFree)
-        activeRecordingMode = mode
-        recordingElapsed = 0
-        recordingTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.recordingElapsed += 1
-            }
-        }
-        overlay.show(state: .listening(handsFree: mode == .handsFree, elapsedSeconds: 0))
         let capturedContext = AppContextProvider.current()
 
         let shouldPauseMedia = (mode == .handsFree && preferences.media.pauseDuringHandsFree)
                             || (mode == .pressToTalk && preferences.media.pauseDuringPressToTalk)
 
-        activeStartTask = Task {
+        activeStartTask = Task { @MainActor in
             do {
+                try await ensureMicrophonePermission()
+
+                status = mode == .handsFree ? "Hands-free listening..." : "Recording..."
+                isRecording = true
+                handsFreeOn = mode == .handsFree
+                menuBar.updateIcon(isRecording: true, handsFreeOn: mode == .handsFree)
+                activeRecordingMode = mode
+                recordingElapsed = 0
+                recordingTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+                    Task { @MainActor [weak self] in
+                        self?.recordingElapsed += 1
+                    }
+                }
+                overlay.show(state: .listening(handsFree: mode == .handsFree, elapsedSeconds: 0))
+
                 if shouldPauseMedia {
                     activeMediaToken = await mediaInterruption.beginInterruption()
                 }
@@ -504,7 +519,7 @@ final class DictationController: ObservableObject {
 
             do {
                 // Stop the streaming session to get the final transcript.
-                let rawTranscript = streamingSession?.stop() ?? RawTranscript(text: "")
+                let rawTranscript = try streamingSession?.stop() ?? RawTranscript(text: "")
                 let result = try await coordinator.processStreamingTranscript(
                     rawTranscript,
                     sessionID: sessionID
@@ -629,9 +644,30 @@ final class DictationController: ObservableObject {
     }
 
     private func validateEngineConfiguration() {
-        guard MoonshineModelDownloader.isModelReady(preset: preferences.dictation.modelArch) else {
+        let missing = MoonshineModelPaths.missingFiles(
+            in: preferences.dictation.modelDirectoryPath,
+            preset: preferences.dictation.modelArch
+        )
+        guard missing.isEmpty else {
             status = "Moonshine model not downloaded. Check Settings \u{2192} Engine."
             return
+        }
+    }
+
+    private func ensureMicrophonePermission() async throws {
+        let currentStatus = PermissionDiagnostics.microphoneStatus()
+        switch currentStatus {
+        case .granted:
+            microphonePermissionStatus = .granted
+        case .denied:
+            microphonePermissionStatus = .denied
+            throw RecordingStartError.microphonePermissionDenied
+        case .unknown:
+            let granted = await PermissionDiagnostics.requestMicrophonePermission()
+            refreshPermissionStatuses()
+            guard granted else {
+                throw RecordingStartError.microphonePermissionDenied
+            }
         }
     }
 

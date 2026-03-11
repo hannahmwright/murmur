@@ -4,6 +4,7 @@ import MoonshineVoice
 import VoceKit
 
 enum MoonshineTranscriptionError: Error, LocalizedError {
+    case microphonePermissionDenied
     case modelDirectoryNotFound(path: String)
     case missingModelFiles([String])
     case failedToReadAudio(String)
@@ -11,6 +12,8 @@ enum MoonshineTranscriptionError: Error, LocalizedError {
 
     var errorDescription: String? {
         switch self {
+        case .microphonePermissionDenied:
+            return "Microphone permission denied"
         case .modelDirectoryNotFound(let path):
             return "Moonshine model directory not found at: \(path)"
         case .missingModelFiles(let files):
