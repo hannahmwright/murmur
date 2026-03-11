@@ -93,21 +93,25 @@ final class MoonshineModelDownloader: ObservableObject {
         await MainActor.run { status = .completed }
     }
 
-    /// URLSession configured with generous timeouts for large model files.
-    private nonisolated static let downloadSession: URLSession = {
-        let config = URLSessionConfiguration.default
-        config.timeoutIntervalForRequest = 300   // 5 min per stalled request
-        config.timeoutIntervalForResource = 1800 // 30 min total per file
-        return URLSession(configuration: config)
-    }()
-
     private nonisolated func downloadFile(
         from remoteURL: URL,
         to localURL: URL,
         fileIndex: Int,
         fileCount: Int
     ) async throws {
-        let (tempDownloadURL, response) = try await Self.downloadSession.download(from: remoteURL)
+        let delegate = ProgressDelegate { [weak self] progress in
+            Task { @MainActor in
+                self?.status = .downloading(fileIndex: fileIndex, fileCount: fileCount, fileProgress: progress)
+            }
+        }
+
+        let config = URLSessionConfiguration.default
+        config.timeoutIntervalForRequest = 300   // 5 min per stalled request
+        config.timeoutIntervalForResource = 1800 // 30 min total per file
+        let session = URLSession(configuration: config, delegate: delegate, delegateQueue: nil)
+        defer { session.finishTasksAndInvalidate() }
+
+        let (tempDownloadURL, response) = try await session.download(from: remoteURL)
 
         guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
             let code = (response as? HTTPURLResponse)?.statusCode ?? -1
@@ -121,10 +125,6 @@ final class MoonshineModelDownloader: ObservableObject {
         // Move the URLSession temp file to our staging location.
         try? FileManager.default.removeItem(at: tempURL)
         try FileManager.default.moveItem(at: tempDownloadURL, to: tempURL)
-
-        await MainActor.run {
-            status = .downloading(fileIndex: fileIndex, fileCount: fileCount, fileProgress: 1.0)
-        }
 
         // Atomic move into place.
         try? FileManager.default.removeItem(at: localURL)
@@ -145,5 +145,46 @@ final class MoonshineModelDownloader: ObservableObject {
                 return "Server returned HTTP \(code)"
             }
         }
+    }
+}
+
+/// Reports download progress via a callback, throttled to avoid flooding the main thread.
+private final class ProgressDelegate: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
+    private let onProgress: @Sendable (Double) -> Void
+    private let lock = NSLock()
+    private var lastReportedTime: CFAbsoluteTime = 0
+
+    init(onProgress: @escaping @Sendable (Double) -> Void) {
+        self.onProgress = onProgress
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didWriteData bytesWritten: Int64,
+        totalBytesWritten: Int64,
+        totalBytesExpectedToWrite: Int64
+    ) {
+        guard totalBytesExpectedToWrite > 0 else { return }
+
+        // Throttle UI updates to at most every 0.1s
+        let now = CFAbsoluteTimeGetCurrent()
+        lock.lock()
+        let shouldReport = now - lastReportedTime >= 0.1
+        if shouldReport { lastReportedTime = now }
+        lock.unlock()
+
+        if shouldReport {
+            let progress = Double(totalBytesWritten) / Double(totalBytesExpectedToWrite)
+            onProgress(min(progress, 1.0))
+        }
+    }
+
+    func urlSession(
+        _ session: URLSession,
+        downloadTask: URLSessionDownloadTask,
+        didFinishDownloadingTo location: URL
+    ) {
+        // Required by protocol; actual file handling is done in the async caller.
     }
 }
