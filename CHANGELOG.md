@@ -7,6 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.9] - 2026-03-11
+
+### Fixed
+- Reduced clipped endings in live Moonshine dictation by using CoreAudio buffer timestamps instead of tap-callback timing when deciding what audio belongs before key release.
+- Push-to-talk release now keeps a short speech-aware capture tail so the final word can finish naturally before the stream is finalized, with a hard cap to keep stop responsive.
+
 ## [0.4.8] - 2026-03-11
 
 ### Fixed

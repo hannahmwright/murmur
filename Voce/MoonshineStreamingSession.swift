@@ -11,11 +11,14 @@ import VoceKit
 /// stream without an intermediate batching timer.
 final class MoonshineStreamingSession: @unchecked Sendable {
     private static let audioDrainTimeout: TimeInterval = 0.35
-    private static let captureBoundaryWaitTimeout: TimeInterval = 0.25
+    private static let captureBoundaryWaitTimeout: TimeInterval = 0.55
+    fileprivate static let captureTailTimeout: TimeInterval = 0.32
+    private static let captureSilenceGracePeriod: TimeInterval = 0.12
     private static let captureIdleGracePeriod: TimeInterval = 0.04
     private static let captureBoundaryPollInterval: TimeInterval = 0.01
     private static let finalTranscriptSettleWindow: TimeInterval = 0.35
     private static let finalTranscriptPollInterval: TimeInterval = 0.05
+    private static let speechActivityFloor: Float = 0.0035
 
     struct Configuration: Sendable {
         var modelDirectoryPath: String
@@ -83,19 +86,15 @@ final class MoonshineStreamingSession: @unchecked Sendable {
             || inputFormat.commonFormat != targetFormat.commonFormat
         let converter = needsConversion ? AVAudioConverter(from: inputFormat, to: targetFormat) : nil
 
-        inputNode.installTap(onBus: 0, bufferSize: 1_024, format: inputFormat) { [weak self] buffer, _ in
+        inputNode.installTap(onBus: 0, bufferSize: 1_024, format: inputFormat) { [weak self] buffer, when in
             guard let self else { return }
 
             let bufferTiming = self.bufferTiming(
                 frameLength: buffer.frameLength,
-                sampleRate: inputFormat.sampleRate
+                sampleRate: inputFormat.sampleRate,
+                time: when
             )
             let captureDecision = self.captureStopState.captureDecision(for: bufferTiming)
-            self.captureStopState.noteTap(
-                timing: bufferTiming,
-                acceptedDuration: captureDecision.allowedDuration
-            )
-
             guard captureDecision.allowedDuration > 0 else { return }
 
             let converted = self.convertBuffer(
@@ -107,6 +106,13 @@ final class MoonshineStreamingSession: @unchecked Sendable {
             let trimmed = self.trimConvertedSamples(
                 converted,
                 allowedDuration: captureDecision.allowedDuration
+            )
+            let rms = Self.rootMeanSquare(for: trimmed.samples)
+            self.captureStopState.noteTap(
+                timing: bufferTiming,
+                acceptedDuration: captureDecision.allowedDuration,
+                rms: rms,
+                speechActivityFloor: Self.speechActivityFloor
             )
             guard !trimmed.samples.isEmpty else { return }
 
@@ -288,17 +294,26 @@ final class MoonshineStreamingSession: @unchecked Sendable {
 
     private func waitForCaptureBoundary() {
         let deadline = mach_absolute_time() + AVAudioTime.hostTime(forSeconds: Self.captureBoundaryWaitTimeout)
+        let tailHostTime = AVAudioTime.hostTime(forSeconds: Self.captureTailTimeout)
+        let silenceGraceHostTime = AVAudioTime.hostTime(forSeconds: Self.captureSilenceGracePeriod)
         let idleGraceHostTime = AVAudioTime.hostTime(forSeconds: Self.captureIdleGracePeriod)
 
         while mach_absolute_time() < deadline {
             let snapshot = captureStopState.snapshot()
-            if snapshot.sawPostCutoffBuffer {
+            guard let stopRequestedHostTime = snapshot.stopRequestedHostTime else {
                 return
             }
 
-            if snapshot.pendingAudioBuffers == 0,
-               snapshot.lastTapHostTime > 0,
-               mach_absolute_time() &- snapshot.lastTapHostTime >= idleGraceHostTime {
+            let now = mach_absolute_time()
+            let idleSatisfied = snapshot.pendingAudioBuffers == 0
+                && snapshot.lastTapHostTime > 0
+                && now &- snapshot.lastTapHostTime >= idleGraceHostTime
+            let hardStopSatisfied = now >= stopRequestedHostTime &+ tailHostTime
+            let silenceReferenceHostTime = max(stopRequestedHostTime, snapshot.lastAudibleHostTime)
+            let silenceSatisfied = now >= silenceReferenceHostTime
+                && now &- silenceReferenceHostTime >= silenceGraceHostTime
+
+            if idleSatisfied && (hardStopSatisfied || silenceSatisfied) {
                 return
             }
 
@@ -339,15 +354,26 @@ final class MoonshineStreamingSession: @unchecked Sendable {
 
     private func bufferTiming(
         frameLength: AVAudioFrameCount,
-        sampleRate: Double
+        sampleRate: Double,
+        time: AVAudioTime?
     ) -> BufferTiming {
-        let now = mach_absolute_time()
         let duration = Double(frameLength) / sampleRate
+        if let time, time.hostTime != 0 {
+            let startHostTime = time.hostTime
+            let durationHostTime = AVAudioTime.hostTime(forSeconds: duration)
+            return BufferTiming(
+                startHostTime: startHostTime,
+                endHostTime: startHostTime &+ durationHostTime,
+                durationSeconds: duration
+            )
+        }
+
+        let callbackHostTime = mach_absolute_time()
         let durationHostTime = AVAudioTime.hostTime(forSeconds: duration)
-        let startHostTime = now > durationHostTime ? now - durationHostTime : 0
+        let startHostTime = callbackHostTime > durationHostTime ? callbackHostTime - durationHostTime : 0
         return BufferTiming(
             startHostTime: startHostTime,
-            endHostTime: now,
+            endHostTime: callbackHostTime,
             durationSeconds: duration
         )
     }
@@ -374,6 +400,15 @@ final class MoonshineStreamingSession: @unchecked Sendable {
                 "\(line.lineId)|\(line.text)|\(line.isComplete)|\(line.startTime)|\(line.duration)"
             }
             .joined(separator: "\n")
+    }
+
+    private static func rootMeanSquare(for samples: [Float]) -> Float {
+        guard !samples.isEmpty else { return 0 }
+
+        let sumOfSquares = samples.reduce(into: Float.zero) { partialResult, sample in
+            partialResult += sample * sample
+        }
+        return sqrt(sumOfSquares / Float(samples.count))
     }
 
     private static func buildRawTranscript(from transcript: Transcript) -> RawTranscript {
@@ -432,23 +467,24 @@ private struct CaptureDecision: Sendable {
 
 private final class CaptureStopState: @unchecked Sendable {
     struct Snapshot: Sendable {
+        let stopRequestedHostTime: UInt64?
         let lastTapHostTime: UInt64
+        let lastAudibleHostTime: UInt64
         let pendingAudioBuffers: Int
-        let sawPostCutoffBuffer: Bool
     }
 
     private let lock = NSLock()
     private var stopRequestedHostTime: UInt64?
     private var lastTapHostTime: UInt64 = 0
+    private var lastAudibleHostTime: UInt64 = 0
     private var pendingAudioBuffers: Int = 0
-    private var sawPostCutoffBuffer = false
 
     func reset() {
         lock.lock()
         stopRequestedHostTime = nil
         lastTapHostTime = 0
+        lastAudibleHostTime = 0
         pendingAudioBuffers = 0
-        sawPostCutoffBuffer = false
         lock.unlock()
     }
 
@@ -460,12 +496,14 @@ private final class CaptureStopState: @unchecked Sendable {
 
     func captureDecision(for timing: BufferTiming) -> CaptureDecision {
         lock.lock()
-        let cutoffHostTime = stopRequestedHostTime
+        let stopRequestedHostTime = stopRequestedHostTime
         lock.unlock()
 
-        guard let cutoffHostTime else {
+        guard let stopRequestedHostTime else {
             return CaptureDecision(allowedDuration: timing.durationSeconds)
         }
+
+        let cutoffHostTime = stopRequestedHostTime &+ AVAudioTime.hostTime(forSeconds: 0.32)
 
         if timing.startHostTime >= cutoffHostTime {
             return CaptureDecision(allowedDuration: 0)
@@ -480,13 +518,16 @@ private final class CaptureStopState: @unchecked Sendable {
         return CaptureDecision(allowedDuration: allowedDuration)
     }
 
-    func noteTap(timing: BufferTiming, acceptedDuration: TimeInterval) {
+    func noteTap(
+        timing: BufferTiming,
+        acceptedDuration: TimeInterval,
+        rms: Float,
+        speechActivityFloor: Float
+    ) {
         lock.lock()
-        lastTapHostTime = mach_absolute_time()
-        if let cutoffHostTime = stopRequestedHostTime,
-           timing.endHostTime > cutoffHostTime,
-           acceptedDuration < timing.durationSeconds {
-            sawPostCutoffBuffer = true
+        lastTapHostTime = timing.endHostTime
+        if acceptedDuration > 0, rms >= speechActivityFloor {
+            lastAudibleHostTime = timing.endHostTime
         }
         lock.unlock()
     }
@@ -506,9 +547,10 @@ private final class CaptureStopState: @unchecked Sendable {
     func snapshot() -> Snapshot {
         lock.lock()
         let snapshot = Snapshot(
+            stopRequestedHostTime: stopRequestedHostTime,
             lastTapHostTime: lastTapHostTime,
+            lastAudibleHostTime: lastAudibleHostTime,
             pendingAudioBuffers: pendingAudioBuffers,
-            sawPostCutoffBuffer: sawPostCutoffBuffer
         )
         lock.unlock()
         return snapshot
