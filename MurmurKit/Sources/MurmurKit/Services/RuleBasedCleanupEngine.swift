@@ -62,8 +62,9 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
 
     // MARK: - Precompiled Regexes
 
-    private static let fillerRegexes: [String: NSRegularExpression] = {
-        let fillers = ["um", "uh", "you know", "i mean", "basically", "sort of", "kind of"]
+    /// Words that always indicate filler regardless of context.
+    private static let unconditionalFillerRegexes: [String: NSRegularExpression] = {
+        let fillers = ["um", "uh"]
         var dict: [String: NSRegularExpression] = [:]
         for filler in fillers {
             let escaped = NSRegularExpression.escapedPattern(for: filler)
@@ -75,9 +76,47 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
         return dict
     }()
 
+    /// Context-aware filler patterns that use negative lookahead to preserve
+    /// intentional usage. Each filler word is only stripped when NOT followed
+    /// by words that indicate meaningful use.
+    private static let contextAwareFillerRegexes: [String: NSRegularExpression] = {
+        // "you know" is intentional before articles, pronouns, wh-words, "how", "if", "about"
+        // e.g. "you know the answer", "you know what I mean", "you know how it works"
+        let youKnowSafe = "(?:the|a|an|that|this|those|these|what|who|where|when|why|which|how|if|about|my|his|her|our|your|their|it)"
+        // "I mean" is intentional before pronouns, articles, "that", "it", "to"
+        // e.g. "I mean it", "I mean the one on the left", "I mean to say"
+        let iMeanSafe = "(?:it|that|this|the|a|an|to|what|my|his|her|our|your|their|we|they|he|she|you)"
+        // "sort of" / "kind of" is intentional before articles, nouns (thing/person/etc)
+        // e.g. "kind of dog", "sort of a problem" — but "it's kind of weird" is filler
+        let ofSafe = "(?:a|an|the|thing|person|way|place|like)"
+        // "basically" is almost always filler in speech, but preserve before a comma
+        // or when it starts a clause that explains something
+        let basicallySafe = "(?:the|a|an|it|what)"
+
+        let specs: [(String, String)] = [
+            ("you know", "(?i)(?:\\s|^)you know(?!\\s+\(youKnowSafe)(?:\\s|[,.!?]|$))(?=\\s|[,.!?]|$)"),
+            ("i mean", "(?i)(?:\\s|^)i mean(?!\\s+\(iMeanSafe)(?:\\s|[,.!?]|$))(?=\\s|[,.!?]|$)"),
+            ("sort of", "(?i)(?:\\s|^)sort of(?!\\s+\(ofSafe)(?:\\s|[,.!?]|$))(?=\\s|[,.!?]|$)"),
+            ("kind of", "(?i)(?:\\s|^)kind of(?!\\s+\(ofSafe)(?:\\s|[,.!?]|$))(?=\\s|[,.!?]|$)"),
+            ("basically", "(?i)(?:\\s|^)basically(?!\\s+\(basicallySafe)(?:\\s|[,.!?]|$))(?=\\s|[,.!?]|$)"),
+        ]
+
+        var dict: [String: NSRegularExpression] = [:]
+        for (filler, pattern) in specs {
+            if let regex = try? NSRegularExpression(pattern: pattern) {
+                dict[filler] = regex
+            }
+        }
+        return dict
+    }()
+
+    /// "like" patterns — only strip comma-delimited filler "like" and sentence-initial "like".
+    /// Preserve meaningful "like" after verbs (is/are/was/were/looks/sounds/feels/seems/would/could).
     private static let likePatterns: [(regex: NSRegularExpression, replacement: String)] = {
         let specs: [(pattern: String, replacement: String)] = [
+            // Sentence-initial filler: "Like, we should go"
             ("(?i)(^|[.!?]\\s+)like,\\s+", "$1"),
+            // Comma-wrapped filler: "it was, like, really big"
             ("(?i),\\s*like,\\s*", ", ")
         ]
         return specs.compactMap { spec in
@@ -97,17 +136,32 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
             return (text, [], [])
         }
 
-        let balancedFillers = ["um", "uh", "you know"]
-        let aggressiveFillers = balancedFillers + ["i mean", "basically", "sort of", "kind of"]
-        let directFillers = policy == .balanced ? balancedFillers : aggressiveFillers
+        // Unconditional fillers (um, uh) are always safe to remove.
+        let unconditionalFillers = ["um", "uh"]
+        // Context-aware fillers only removed when not followed by safe-context words.
+        let balancedContextFillers: [String] = ["you know"]
+        let aggressiveContextFillers = balancedContextFillers + ["i mean", "basically", "sort of", "kind of"]
+        let contextFillers = policy == .balanced ? balancedContextFillers : aggressiveContextFillers
 
         var updated = text
         var removed: [String] = []
         var edits: [TranscriptEdit] = []
 
-        for filler in directFillers {
-            guard let regex = Self.fillerRegexes[filler] else { continue }
+        // Remove unconditional fillers.
+        for filler in unconditionalFillers {
+            guard let regex = Self.unconditionalFillerRegexes[filler] else { continue }
+            let range = NSRange(updated.startIndex..., in: updated)
+            let count = regex.numberOfMatches(in: updated, range: range)
+            if count > 0 {
+                updated = regex.stringByReplacingMatches(in: updated, range: range, withTemplate: " ")
+                removed.append(contentsOf: Array(repeating: filler, count: count))
+                edits.append(TranscriptEdit(kind: .fillerRemoval, from: filler, to: ""))
+            }
+        }
 
+        // Remove context-aware fillers (only when not followed by meaningful words).
+        for filler in contextFillers {
+            guard let regex = Self.contextAwareFillerRegexes[filler] else { continue }
             let range = NSRange(updated.startIndex..., in: updated)
             let count = regex.numberOfMatches(in: updated, range: range)
             if count > 0 {
