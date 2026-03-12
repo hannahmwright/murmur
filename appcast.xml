@@ -3,6 +3,27 @@
   <channel>
     <title>Voce</title>
     <item>
+      <title>Version 0.4.10</title>
+      <sparkle:version>13</sparkle:version>
+      <sparkle:shortVersionString>0.4.10</sparkle:shortVersionString>
+      <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+      <description><![CDATA[
+        <h2>Voce 0.4.10</h2>
+        <ul>
+          <li>Makes push-to-talk finalization much more robust so the ends of phrases are less likely to be clipped</li>
+          <li>Preserves meaning-bearing endings during cleanup and removes accidental adjacent repeated phrase runs</li>
+          <li>Simplifies the live overlay to a single transcript-focused pill and adds a toggle for keeping the model warmed in memory</li>
+        </ul>
+      ]]></description>
+      <pubDate>Thu, 12 Mar 2026 05:23:43 +0000</pubDate>
+      <enclosure
+        url="https://github.com/hannahmwright/voce/releases/download/v0.4.10/Voce-0.4.10.dmg"
+        type="application/octet-stream"
+        sparkle:edSignature="J/hcxxnockZA39eo+VVnuvORGGXmhklissGOHAraZT9CUIKEtGlDIqV+zxvfj6AdSQUiFBeqWwiVTCiwDmVoDA=="
+        length="37526998"
+      />
+    </item>
+    <item>
       <title>Version 0.4.9</title>
       <sparkle:version>12</sparkle:version>
       <sparkle:shortVersionString>0.4.9</sparkle:shortVersionString>

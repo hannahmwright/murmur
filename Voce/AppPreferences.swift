@@ -40,18 +40,22 @@ struct AppPreferences: Codable, Sendable, Equatable {
     struct Dictation: Codable, Sendable, Equatable {
         var modelDirectoryPath: String
         var modelArch: MoonshineModelPreset
+        var keepModelWarm: Bool
 
         init(
             modelDirectoryPath: String,
-            modelArch: MoonshineModelPreset = .smallStreaming
+            modelArch: MoonshineModelPreset = .smallStreaming,
+            keepModelWarm: Bool = true
         ) {
             self.modelDirectoryPath = modelDirectoryPath
             self.modelArch = modelArch
+            self.keepModelWarm = keepModelWarm
         }
 
         enum CodingKeys: String, CodingKey {
             case modelDirectoryPath
             case modelArch
+            case keepModelWarm
             case modelPath
             case whisperCLIPath
             case threadCount
@@ -81,12 +85,14 @@ struct AppPreferences: Codable, Sendable, Equatable {
 
             modelDirectoryPath = resolvedPath
             modelArch = try container.decodeIfPresent(MoonshineModelPreset.self, forKey: .modelArch) ?? defaultModelArch
+            keepModelWarm = try container.decodeIfPresent(Bool.self, forKey: .keepModelWarm) ?? true
         }
 
         func encode(to encoder: Encoder) throws {
             var container = encoder.container(keyedBy: CodingKeys.self)
             try container.encode(modelDirectoryPath, forKey: .modelDirectoryPath)
             try container.encode(modelArch, forKey: .modelArch)
+            try container.encode(keepModelWarm, forKey: .keepModelWarm)
         }
     }
 
@@ -144,7 +150,8 @@ struct AppPreferences: Codable, Sendable, Equatable {
             ),
             dictation: .init(
                 modelDirectoryPath: MoonshineModelPaths.defaultModelDirectoryPath(for: .smallStreaming),
-                modelArch: .smallStreaming
+                modelArch: .smallStreaming,
+                keepModelWarm: true
             ),
             insertion: .init(orderedMethods: [.direct, .accessibility, .clipboardPaste]),
             media: .init(pauseDuringHandsFree: true, pauseDuringPressToTalk: true),

@@ -92,10 +92,20 @@ public struct LocalCleanupRanker: Sendable {
             "like an",
             "like to",
         ]
+        let protectedMeaningPhrases = [
+            "what i mean",
+            "you know what i mean",
+            "if you know what i mean",
+        ]
 
         for phrase in protectedLikePhrases {
             if rawNormalized.contains(phrase), !candidateNormalized.contains(phrase) {
                 score -= 0.25
+            }
+        }
+        for phrase in protectedMeaningPhrases {
+            if rawNormalized.contains(phrase), !candidateNormalized.contains(phrase) {
+                score -= 0.35
             }
         }
 

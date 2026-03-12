@@ -5,8 +5,15 @@ import QuartzCore
 
 @MainActor
 public final class MacOverlayPresenter: NSObject, OverlayPresenter {
+    private enum LayoutMode {
+        case compact
+        case transcript
+    }
+
     private static let axSelectedTextMarkerRangeAttribute = "AXSelectedTextMarkerRange"
     private static let axBoundsForTextMarkerRangeParameterizedAttribute = "AXBoundsForTextMarkerRange"
+    private static let compactSize = NSSize(width: 260, height: 44)
+    private static let transcriptSize = NSSize(width: 320, height: 84)
 
     public struct AnchorSnapshot: Sendable, Equatable {
         public let frame: CGRect
@@ -18,7 +25,9 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
 
     private var window: NSWindow?
     private var statusDot: NSView?
-    private var textField: NSTextField?
+    private var statusTextField: NSTextField?
+    private var transcriptScrollView: NSScrollView?
+    private var transcriptTextView: NSTextView?
     private var timer: Timer?
     private var listeningStartDate: Date?
     private var listeningHandsFree = false
@@ -26,6 +35,8 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
     private var dotPulseHigh = true
     private var wasHidden = true
     private var anchorSnapshot: AnchorSnapshot?
+    private var layoutMode: LayoutMode = .compact
+    private var lastLiveTranscriptText: String = ""
 
     private static let dotBlue = NSColor(red: 0.32, green: 0.60, blue: 0.82, alpha: 1.0)
 
@@ -79,39 +90,46 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
 
         switch state {
         case .listening(let handsFree, _):
+            applyLayout(.transcript)
             listeningHandsFree = handsFree
             listeningStartDate = Date()
-            updateListeningText()
-            startTimer()
+            lastLiveTranscriptText = ""
+            updateTranscript("Transcribing…")
+            stopTimer()
             animateDotColor(Self.dotBlue)
             startDotPulse()
 
         case .liveTranscript(let text, _):
+            applyLayout(.transcript)
             stopTimer()
-            let display = text.count > 80 ? "..." + text.suffix(77) : text
-            textField?.stringValue = display
+            lastLiveTranscriptText = text
+            updateTranscript(text)
             animateDotColor(Self.dotBlue)
             startDotPulse()
 
         case .transcribing:
             stopTimer()
-            stopDotPulse()
-            updateText("Transcribing...")
-            animateDotColor(.darkGray)
+            applyLayout(.transcript)
+            updateTranscript(lastLiveTranscriptText.isEmpty ? "Transcribing…" : lastLiveTranscriptText)
+            animateDotColor(.systemOrange)
+            startDotPulse()
 
         case .inserted:
+            applyLayout(.compact)
             stopTimer()
             stopDotPulse()
             updateText("Inserted")
             animateDotColor(.systemGreen)
 
         case .copiedOnly:
+            applyLayout(.compact)
             stopTimer()
             stopDotPulse()
             updateText("Copied to clipboard")
             animateDotColor(.systemOrange)
 
         case .failure(let message):
+            applyLayout(.compact)
             stopTimer()
             stopDotPulse()
             updateText("Error: \(message)")
@@ -143,6 +161,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         stopDotPulse()
         wasHidden = true
         anchorSnapshot = nil
+        lastLiveTranscriptText = ""
 
         if !reduceMotion {
             NSAnimationContext.runAnimationGroup({ context in
@@ -161,7 +180,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
             return
         }
 
-        let contentRect = NSRect(x: 0, y: 0, width: 260, height: 44)
+        let contentRect = NSRect(origin: .zero, size: Self.compactSize)
         let panel = NSPanel(
             contentRect: contentRect,
             styleMask: [.borderless, .nonactivatingPanel],
@@ -199,16 +218,24 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         container.layer?.shadowRadius = 20
         container.layer?.shadowOpacity = 1
         container.addSubview(vibrancy)
+        vibrancy.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            vibrancy.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            vibrancy.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            vibrancy.topAnchor.constraint(equalTo: container.topAnchor),
+            vibrancy.bottomAnchor.constraint(equalTo: container.bottomAnchor)
+        ])
 
         // Status dot
-        let dot = NSView(frame: NSRect(x: 16, y: 16, width: 12, height: 12))
+        let dot = NSView(frame: .zero)
         dot.wantsLayer = true
         dot.layer?.cornerRadius = 6
         dot.layer?.backgroundColor = Self.dotBlue.cgColor
+        dot.translatesAutoresizingMaskIntoConstraints = false
         vibrancy.addSubview(dot)
         self.statusDot = dot
 
-        // Status text
+        // Compact status text.
         let label = NSTextField(labelWithString: "Listening 00:00")
         label.font = .systemFont(ofSize: 13, weight: .medium)
         label.textColor = .labelColor
@@ -216,16 +243,55 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         label.lineBreakMode = .byTruncatingTail
         label.translatesAutoresizingMaskIntoConstraints = false
         vibrancy.addSubview(label)
+        self.statusTextField = label
+
+        // Transcript preview grows to three wrapped lines and follows the latest partials.
+        let transcriptTextView = NSTextView(frame: .zero)
+        transcriptTextView.drawsBackground = false
+        transcriptTextView.isEditable = false
+        transcriptTextView.isSelectable = false
+        transcriptTextView.isVerticallyResizable = true
+        transcriptTextView.isHorizontallyResizable = false
+        transcriptTextView.textContainerInset = NSSize(width: 0, height: 1)
+        transcriptTextView.font = .systemFont(ofSize: 13, weight: .medium)
+        transcriptTextView.textColor = .labelColor
+        transcriptTextView.alignment = .left
+        transcriptTextView.textContainer?.lineBreakMode = .byWordWrapping
+        transcriptTextView.textContainer?.widthTracksTextView = true
+
+        let transcriptScrollView = NSScrollView(frame: .zero)
+        transcriptScrollView.drawsBackground = false
+        transcriptScrollView.borderType = .noBorder
+        transcriptScrollView.hasVerticalScroller = false
+        transcriptScrollView.hasHorizontalScroller = false
+        transcriptScrollView.autohidesScrollers = true
+        transcriptScrollView.verticalScrollElasticity = .none
+        transcriptScrollView.horizontalScrollElasticity = .none
+        transcriptScrollView.documentView = transcriptTextView
+        transcriptScrollView.translatesAutoresizingMaskIntoConstraints = false
+        transcriptScrollView.isHidden = true
+        vibrancy.addSubview(transcriptScrollView)
+        self.transcriptTextView = transcriptTextView
+        self.transcriptScrollView = transcriptScrollView
 
         NSLayoutConstraint.activate([
+            dot.leadingAnchor.constraint(equalTo: vibrancy.leadingAnchor, constant: 16),
+            dot.centerYAnchor.constraint(equalTo: vibrancy.centerYAnchor),
+            dot.widthAnchor.constraint(equalToConstant: 12),
+            dot.heightAnchor.constraint(equalToConstant: 12),
+
             label.leadingAnchor.constraint(equalTo: vibrancy.leadingAnchor, constant: 36),
             label.trailingAnchor.constraint(equalTo: vibrancy.trailingAnchor, constant: -16),
-            label.centerYAnchor.constraint(equalTo: vibrancy.centerYAnchor)
+            label.centerYAnchor.constraint(equalTo: vibrancy.centerYAnchor),
+
+            transcriptScrollView.leadingAnchor.constraint(equalTo: vibrancy.leadingAnchor, constant: 36),
+            transcriptScrollView.trailingAnchor.constraint(equalTo: vibrancy.trailingAnchor, constant: -16),
+            transcriptScrollView.topAnchor.constraint(equalTo: vibrancy.topAnchor, constant: 12),
+            transcriptScrollView.bottomAnchor.constraint(equalTo: vibrancy.bottomAnchor, constant: -12)
         ])
 
         panel.contentView = container
         self.window = panel
-        self.textField = label
     }
 
     private func animateDotColor(_ color: NSColor) {
@@ -240,20 +306,54 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
     }
 
     private func updateText(_ newText: String) {
+        transcriptScrollView?.isHidden = true
+        statusTextField?.isHidden = false
         guard !reduceMotion else {
-            textField?.stringValue = newText
+            statusTextField?.stringValue = newText
             return
         }
         NSAnimationContext.runAnimationGroup({ context in
             context.duration = 0.1
-            self.textField?.animator().alphaValue = 0
+            self.statusTextField?.animator().alphaValue = 0
         }, completionHandler: {
-            self.textField?.stringValue = newText
+            self.statusTextField?.stringValue = newText
             NSAnimationContext.runAnimationGroup { context in
                 context.duration = 0.15
-                self.textField?.animator().alphaValue = 1
+                self.statusTextField?.animator().alphaValue = 1
             }
         })
+    }
+
+    private func updateTranscript(_ text: String) {
+        statusTextField?.isHidden = true
+        transcriptScrollView?.isHidden = false
+        transcriptTextView?.string = text
+        transcriptTextView?.scrollToEndOfDocument(nil)
+    }
+
+    private func applyLayout(_ newLayout: LayoutMode) {
+        guard let window, layoutMode != newLayout else {
+            if newLayout == .transcript {
+                statusTextField?.isHidden = true
+                transcriptScrollView?.isHidden = false
+            } else {
+                statusTextField?.isHidden = false
+                transcriptScrollView?.isHidden = true
+            }
+            return
+        }
+
+        layoutMode = newLayout
+        let targetSize = newLayout == .transcript ? Self.transcriptSize : Self.compactSize
+        window.setContentSize(targetSize)
+        positionWindow()
+        if newLayout == .transcript {
+            statusTextField?.isHidden = true
+            transcriptScrollView?.isHidden = false
+        } else {
+            statusTextField?.isHidden = false
+            transcriptScrollView?.isHidden = true
+        }
     }
 
     private func startDotPulse() {
@@ -299,7 +399,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
 
     private func updateListeningText() {
         guard let start = listeningStartDate else {
-            textField?.stringValue = "Listening 00:00"
+            statusTextField?.stringValue = "Listening 00:00"
             return
         }
 
@@ -307,7 +407,7 @@ public final class MacOverlayPresenter: NSObject, OverlayPresenter {
         let minutes = elapsed / 60
         let seconds = elapsed % 60
         let mode = listeningHandsFree ? "Hands-Free" : "Hold-to-Talk"
-        textField?.stringValue = "\(mode) \(String(format: "%02d:%02d", minutes, seconds))"
+        statusTextField?.stringValue = "\(mode) \(String(format: "%02d:%02d", minutes, seconds))"
     }
 
     private func positionWindow() {

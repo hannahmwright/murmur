@@ -74,6 +74,16 @@ func balancedPolicyRemovesUmAndUh() async throws {
     #expect(cleaned.edits.filter { $0.kind == .fillerRemoval }.count == 2)
 }
 
+@Test("Cleanup collapses duplicated adjacent phrase runs before ranking")
+func cleanupCollapsesDuplicatedPhraseRuns() async throws {
+    let cleaned = try await runLocalCleanup(
+        text: "Testing testing one two three testing testing one two three",
+        fillerPolicy: .balanced
+    )
+
+    #expect(cleaned.text == "Testing testing one two three")
+}
+
 // MARK: - Context-Aware "you know" Tests
 
 @Test("Balanced policy preserves 'you know' before article")
@@ -145,6 +155,16 @@ func aggressivePolicyPreservesIMeanBeforeThe() async throws {
         fillerPolicy: .aggressive
     )
     #expect(candidate.text == "I mean the one on the left")
+    #expect(!candidate.removedFillers.contains("i mean"))
+}
+
+@Test("Aggressive policy preserves 'I mean' in 'what I mean'")
+func aggressivePolicyPreservesIMeanAfterWhat() async throws {
+    let candidate = buildCandidate(
+        text: "if you know what I mean",
+        fillerPolicy: .aggressive
+    )
+    #expect(candidate.text == "if you know what I mean")
     #expect(!candidate.removedFillers.contains("i mean"))
 }
 

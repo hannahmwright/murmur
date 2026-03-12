@@ -94,6 +94,52 @@ func rankerPrefersUnchangedCommandCandidate() {
     #expect(best.rulePathID == "unchanged-command")
 }
 
+@Test("Ranker preserves meaning-bearing 'what I mean' tails")
+func rankerPrefersCandidateThatKeepsWhatIMean() {
+    let raw = "Alright, we've got another test to see if my speech gets clipped, which I'm really hoping it does not. Anyways, if you know what I mean."
+    let profile = StyleProfile(
+        name: "Ranker",
+        tone: .natural,
+        structureMode: .paragraph,
+        fillerPolicy: .balanced,
+        commandPolicy: .transform
+    )
+
+    let preserved = CleanupCandidate(
+        text: raw,
+        appliedEdits: [],
+        removedFillers: [],
+        rulePathID: "preserved"
+    )
+    let truncated = CleanupCandidate(
+        text: "Alright, we've got another test to see if my speech gets clipped, which I'm really hoping it does not. Anyways, if you know what.",
+        appliedEdits: [.init(kind: .fillerRemoval, from: "i mean", to: "")],
+        removedFillers: ["i mean"],
+        rulePathID: "truncated"
+    )
+
+    let ranker = LocalCleanupRanker()
+    let preservedScore = ranker.scoreCandidate(
+        rawText: raw,
+        candidate: preserved,
+        profile: profile
+    )
+    let truncatedScore = ranker.scoreCandidate(
+        rawText: raw,
+        candidate: truncated,
+        profile: profile
+    )
+    let best = ranker.bestCandidate(
+        rawText: raw,
+        candidates: [truncated, preserved],
+        profile: profile
+    )
+
+    #expect(preservedScore.semanticPreservationScore > truncatedScore.semanticPreservationScore)
+    #expect(preservedScore.totalScore > truncatedScore.totalScore)
+    #expect(best.rulePathID == "preserved")
+}
+
 @Test("Candidate generator emits deterministic, deduplicated candidate set")
 func candidateGeneratorDeterministicDeduped() async throws {
     let raw = RawTranscript(text: "Like, I'd like to ship this, you know.")

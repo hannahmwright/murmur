@@ -7,6 +7,16 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.10] - 2026-03-12
+
+### Fixed
+- Made push-to-talk finalization more resilient by using a shared tail policy, better transcript settling, and improved stop diagnostics so live dictation is less likely to clip the end of an utterance.
+- Prevented cleanup from stripping meaning-bearing endings such as "what I mean" and collapsed exact adjacent repeated phrase runs that sometimes appeared in live Moonshine output.
+
+### Changed
+- Simplified the dictation overlay into a single transcript-focused preview that stays visible while finalizing, keeps a rolling three-line partial transcript, and stops flashing separate success states.
+- Added a `Keep model warmed in memory` setting so fast startup remains the default while allowing lower idle memory usage when desired.
+
 ## [0.4.9] - 2026-03-11
 
 ### Fixed

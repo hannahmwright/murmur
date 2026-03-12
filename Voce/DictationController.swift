@@ -493,7 +493,8 @@ final class DictationController: ObservableObject {
                 // Start streaming transcription with live partial updates.
                 let streamConfig = MoonshineStreamingSession.Configuration(
                     modelDirectoryPath: preferences.dictation.modelDirectoryPath,
-                    modelArch: preferences.dictation.modelArch
+                    modelArch: preferences.dictation.modelArch,
+                    keepModelWarm: preferences.dictation.keepModelWarm
                 )
                 let session = MoonshineStreamingSession(config: streamConfig) { [weak self] partialText in
                     Task { @MainActor [weak self] in
@@ -580,11 +581,9 @@ final class DictationController: ObservableObject {
                 case .inserted:
                     status = "Transcript inserted."
                     lastError = ""
-                    overlay.show(state: .inserted)
                 case .copiedOnly:
                     status = copiedOnlyStatusMessage(for: result)
                     lastError = result.errorMessage ?? ""
-                    overlay.show(state: .copiedOnly)
                 case .failed:
                     status = "Transcript ready but insertion failed."
                     let reason = result.errorMessage ?? "Insertion chain exhausted."
@@ -678,10 +677,13 @@ final class DictationController: ObservableObject {
 
         let streamingConfig = MoonshineStreamingSession.Configuration(
             modelDirectoryPath: snapshot.dictation.modelDirectoryPath,
-            modelArch: snapshot.dictation.modelArch
+            modelArch: snapshot.dictation.modelArch,
+            keepModelWarm: snapshot.dictation.keepModelWarm
         )
         MoonshineTranscriberCache.shared.invalidate()
-        MoonshineTranscriberCache.shared.warm(config: streamingConfig)
+        if snapshot.dictation.keepModelWarm {
+            MoonshineTranscriberCache.shared.warm(config: streamingConfig)
+        }
 
         do {
             try launchAtLoginService.setEnabled(snapshot.general.launchAtLoginEnabled)

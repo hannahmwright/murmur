@@ -11,23 +11,29 @@ import VoceKit
 /// stream without an intermediate batching timer.
 final class MoonshineStreamingSession: @unchecked Sendable {
     private static let audioDrainTimeout: TimeInterval = 0.35
-    private static let captureBoundaryWaitTimeout: TimeInterval = 0.55
-    fileprivate static let captureTailTimeout: TimeInterval = 0.32
-    private static let captureSilenceGracePeriod: TimeInterval = 0.12
-    private static let captureIdleGracePeriod: TimeInterval = 0.04
+    private static let captureBoundaryWaitTimeout: TimeInterval = 1.35
     private static let captureBoundaryPollInterval: TimeInterval = 0.01
-    private static let finalTranscriptSettleWindow: TimeInterval = 0.35
+    private static let finalTranscriptSettleWindow: TimeInterval = 1.5
+    private static let finalTranscriptStableWindow: TimeInterval = 0.25
     private static let finalTranscriptPollInterval: TimeInterval = 0.05
-    private static let speechActivityFloor: Float = 0.0035
+    private static let tailPolicyConfiguration = PressToTalkTailPolicy.Configuration(
+        minimumTailDuration: 0.25,
+        maximumTailDuration: 1.0,
+        silenceGraceDuration: 0.18,
+        idleGraceDuration: 0.04,
+        speechActivityFloor: 0.002
+    )
 
     struct Configuration: Sendable {
         var modelDirectoryPath: String
         var modelArch: MoonshineModelPreset
+        var keepModelWarm: Bool = true
     }
 
     private let config: Configuration
     private let onPartialText: @Sendable (String) -> Void
-    private let captureStopState = CaptureStopState()
+    private let captureStopState: CaptureStopState
+    private let diagnostics = StreamingStopDiagnostics()
 
     // Accessed only on processingQueue.
     private let processingQueue = DispatchQueue(label: "voce.moonshine-stream", qos: .userInitiated)
@@ -39,19 +45,32 @@ final class MoonshineStreamingSession: @unchecked Sendable {
 
     // Accessed on main thread.
     private var audioEngine: AVAudioEngine?
+    private var uncachedTranscriber: Transcriber?
 
     init(config: Configuration, onPartialText: @escaping @Sendable (String) -> Void) {
         self.config = config
         self.onPartialText = onPartialText
+        self.captureStopState = CaptureStopState(configuration: Self.tailPolicyConfiguration)
     }
 
     /// Starts audio capture and streaming transcription.
     /// Must be called from the main thread.
     func start() throws {
+        diagnostics.reset()
+        diagnostics.record("start session modelArch=\(config.modelArch.rawValue) modelDirectory=\(config.modelDirectoryPath)")
         try ensureMicrophonePermission()
 
         try processingQueue.sync {
-            let transcriber = try MoonshineTranscriberCache.shared.transcriber(for: config)
+            let transcriber: Transcriber
+            if config.keepModelWarm {
+                transcriber = try MoonshineTranscriberCache.shared.transcriber(for: config)
+            } else {
+                transcriber = try Transcriber(
+                    modelPath: config.modelDirectoryPath,
+                    modelArch: config.modelArch.moonshineArch
+                )
+                uncachedTranscriber = transcriber
+            }
             let stream = try transcriber.createStream(updateInterval: 0.3)
             stream.addListener { [weak self] event in
                 self?.handle(event: event)
@@ -68,6 +87,14 @@ final class MoonshineStreamingSession: @unchecked Sendable {
         let engine = AVAudioEngine()
         let inputNode = engine.inputNode
         let inputFormat = inputNode.inputFormat(forBus: 0)
+        diagnostics.record(
+            String(
+                format: "audio input format sampleRate=%.1f channels=%d commonFormat=%d",
+                inputFormat.sampleRate,
+                inputFormat.channelCount,
+                inputFormat.commonFormat.rawValue
+            )
+        )
 
         // Let Moonshine handle resampling internally. The probe showed our
         // app-side 24 kHz -> 16 kHz conversion path crushes AirPods input
@@ -95,6 +122,17 @@ final class MoonshineStreamingSession: @unchecked Sendable {
                 time: when
             )
             let captureDecision = self.captureStopState.captureDecision(for: bufferTiming)
+            if self.captureStopState.hasPendingStopRequest {
+                self.diagnostics.record(
+                    String(
+                        format: "tail buffer start=%.3f end=%.3f duration=%.3f allowed=%.3f",
+                        bufferTiming.startTime,
+                        bufferTiming.endTime,
+                        bufferTiming.duration,
+                        captureDecision.allowedDuration
+                    )
+                )
+            }
             guard captureDecision.allowedDuration > 0 else { return }
 
             let converted = self.convertBuffer(
@@ -107,13 +145,28 @@ final class MoonshineStreamingSession: @unchecked Sendable {
                 converted,
                 allowedDuration: captureDecision.allowedDuration
             )
-            let rms = Self.rootMeanSquare(for: trimmed.samples)
+            let averageRMS = Self.rootMeanSquare(for: trimmed.samples)
+            let activityRMS = Self.windowedActivityRMS(
+                for: trimmed.samples,
+                sampleRate: trimmed.sampleRate
+            )
             self.captureStopState.noteTap(
                 timing: bufferTiming,
                 acceptedDuration: captureDecision.allowedDuration,
-                rms: rms,
-                speechActivityFloor: Self.speechActivityFloor
+                rms: activityRMS
             )
+            if self.captureStopState.hasPendingStopRequest {
+                self.diagnostics.record(
+                    String(
+                        format: "accepted tail audio duration=%.3f sampleRate=%.1f samples=%d avgRms=%.6f activityRms=%.6f",
+                        captureDecision.allowedDuration,
+                        trimmed.sampleRate,
+                        trimmed.samples.count,
+                        averageRMS,
+                        activityRMS
+                    )
+                )
+            }
             guard !trimmed.samples.isEmpty else { return }
 
             self.audioDrainGroup.enter()
@@ -139,6 +192,7 @@ final class MoonshineStreamingSession: @unchecked Sendable {
         do {
             try engine.start()
         } catch {
+            diagnostics.record("audio engine start failed error=\(error.localizedDescription)")
             inputNode.removeTap(onBus: 0)
             processingQueue.sync {
                 stream?.close()
@@ -147,6 +201,8 @@ final class MoonshineStreamingSession: @unchecked Sendable {
                 latestStreamError = nil
                 isStopped = true
             }
+            uncachedTranscriber?.close()
+            uncachedTranscriber = nil
             throw error
         }
 
@@ -156,40 +212,60 @@ final class MoonshineStreamingSession: @unchecked Sendable {
     /// Stops capture, finalises the transcript, and returns the result.
     /// Must be called from the main thread.
     func stop() throws -> RawTranscript {
-        captureStopState.requestStop()
+        let stopRequestTime = currentCaptureTime()
+        diagnostics.record(
+            String(
+                format: "stop requested at %.3f snapshot=%@",
+                stopRequestTime,
+                captureStopState.snapshotDescription
+            )
+        )
+        captureStopState.requestStop(at: stopRequestTime)
         waitForCaptureBoundary()
+        diagnostics.record("capture boundary reached snapshot=\(captureStopState.snapshotDescription)")
         tearDownAudio()
         _ = audioDrainGroup.wait(timeout: .now() + Self.audioDrainTimeout)
+        diagnostics.record("audio drain wait completed snapshot=\(captureStopState.snapshotDescription)")
 
         return try processingQueue.sync {
             defer {
+                diagnostics.flush()
                 stream?.close()
                 stream = nil
                 latestTranscript = .init()
                 latestStreamError = nil
                 isStopped = true
+                uncachedTranscriber?.close()
+                uncachedTranscriber = nil
             }
 
+            diagnostics.record("calling stream.stop()")
             try stream?.stop()
+            diagnostics.record("stream.stop() returned latestTranscript='\(latestTranscript.lines.map(\.text).joined(separator: " "))'")
             let finalTranscript = try settleFinalTranscript()
             latestTranscript = finalTranscript
+            diagnostics.record("final transcript lines=\(finalTranscript.lines.count) text='\(finalTranscript.lines.map(\.text).joined(separator: " "))'")
 
             if finalTranscript.lines.isEmpty, let latestStreamError {
+                diagnostics.record("stop failed with latestStreamError=\(latestStreamError.localizedDescription)")
                 throw latestStreamError
             }
 
             let rawTranscript = Self.buildRawTranscript(from: finalTranscript)
             if rawTranscript.text.isEmpty {
+                diagnostics.record("raw transcript empty after finalization")
                 throw MoonshineTranscriptionError.emptyLiveTranscript
             }
 
+            diagnostics.record("returning raw transcript durationMS=\(rawTranscript.durationMS) text='\(rawTranscript.text)'")
             return rawTranscript
         }
     }
 
     /// Cancels without producing a transcript.
     func cancel() {
-        captureStopState.requestStop()
+        diagnostics.record("session cancelled")
+        captureStopState.requestStop(at: currentCaptureTime())
         tearDownAudio()
         processingQueue.sync {
             isStopped = true
@@ -198,11 +274,15 @@ final class MoonshineStreamingSession: @unchecked Sendable {
             latestTranscript = .init()
             latestStreamError = nil
         }
+        uncachedTranscriber?.close()
+        uncachedTranscriber = nil
+        diagnostics.flush()
     }
 
     private func handle(event: TranscriptEvent) {
         if let transcriptError = event as? TranscriptError {
             latestStreamError = transcriptError.error
+            diagnostics.record("stream error event=\(transcriptError.error.localizedDescription)")
             return
         }
 
@@ -224,9 +304,14 @@ final class MoonshineStreamingSession: @unchecked Sendable {
             .joined(separator: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !mergedText.isEmpty else { return }
+        let displayText = ConsecutivePhraseDeduplicator.collapse(mergedText)
+
+        diagnostics.record(
+            "event lineId=\(event.line.lineId) complete=\(event.line.isComplete) text='\(currentText)' merged='\(mergedText)' display='\(displayText)'"
+        )
 
         DispatchQueue.main.async { [weak self] in
-            self?.onPartialText(mergedText)
+            self?.onPartialText(displayText)
         }
     }
 
@@ -293,37 +378,23 @@ final class MoonshineStreamingSession: @unchecked Sendable {
     }
 
     private func waitForCaptureBoundary() {
-        let deadline = mach_absolute_time() + AVAudioTime.hostTime(forSeconds: Self.captureBoundaryWaitTimeout)
-        let tailHostTime = AVAudioTime.hostTime(forSeconds: Self.captureTailTimeout)
-        let silenceGraceHostTime = AVAudioTime.hostTime(forSeconds: Self.captureSilenceGracePeriod)
-        let idleGraceHostTime = AVAudioTime.hostTime(forSeconds: Self.captureIdleGracePeriod)
+        let deadline = currentCaptureTime() + Self.captureBoundaryWaitTimeout
 
-        while mach_absolute_time() < deadline {
-            let snapshot = captureStopState.snapshot()
-            guard let stopRequestedHostTime = snapshot.stopRequestedHostTime else {
-                return
-            }
-
-            let now = mach_absolute_time()
-            let idleSatisfied = snapshot.pendingAudioBuffers == 0
-                && snapshot.lastTapHostTime > 0
-                && now &- snapshot.lastTapHostTime >= idleGraceHostTime
-            let hardStopSatisfied = now >= stopRequestedHostTime &+ tailHostTime
-            let silenceReferenceHostTime = max(stopRequestedHostTime, snapshot.lastAudibleHostTime)
-            let silenceSatisfied = now >= silenceReferenceHostTime
-                && now &- silenceReferenceHostTime >= silenceGraceHostTime
-
-            if idleSatisfied && (hardStopSatisfied || silenceSatisfied) {
+        while currentCaptureTime() < deadline {
+            if captureStopState.shouldFinishWaiting(at: currentCaptureTime()) {
                 return
             }
 
             Thread.sleep(forTimeInterval: Self.captureBoundaryPollInterval)
         }
+
+        diagnostics.record("capture boundary timed out snapshot=\(captureStopState.snapshotDescription)")
     }
 
     private func settleFinalTranscript() throws -> Transcript {
         var settledTranscript = latestTranscript
         var settledSignature = transcriptSignature(for: settledTranscript)
+        var lastChangeDate = Date()
         let deadline = Date().addingTimeInterval(Self.finalTranscriptSettleWindow)
 
         while true {
@@ -337,14 +408,22 @@ final class MoonshineStreamingSession: @unchecked Sendable {
             if changed {
                 settledTranscript = updatedTranscript
                 settledSignature = updatedSignature
+                lastChangeDate = Date()
             }
 
             let hasIncompleteLines = updatedTranscript.lines.contains { !$0.isComplete }
-            if !hasIncompleteLines && !changed {
+            let isStable = Date().timeIntervalSince(lastChangeDate) >= Self.finalTranscriptStableWindow
+            diagnostics.record(
+                "finalize poll changed=\(changed) incomplete=\(hasIncompleteLines) stable=\(isStable) text='\(updatedTranscript.lines.map(\.text).joined(separator: " "))'"
+            )
+            if !hasIncompleteLines && isStable {
                 return updatedTranscript
             }
 
             if Date() >= deadline {
+                diagnostics.record(
+                    "finalize deadline reached returning='\((changed ? updatedTranscript : settledTranscript).lines.map(\.text).joined(separator: " "))'"
+                )
                 return changed ? updatedTranscript : settledTranscript
             }
 
@@ -356,25 +435,22 @@ final class MoonshineStreamingSession: @unchecked Sendable {
         frameLength: AVAudioFrameCount,
         sampleRate: Double,
         time: AVAudioTime?
-    ) -> BufferTiming {
+    ) -> PressToTalkTailPolicy.CaptureTiming {
         let duration = Double(frameLength) / sampleRate
         if let time, time.hostTime != 0 {
-            let startHostTime = time.hostTime
-            let durationHostTime = AVAudioTime.hostTime(forSeconds: duration)
-            return BufferTiming(
-                startHostTime: startHostTime,
-                endHostTime: startHostTime &+ durationHostTime,
-                durationSeconds: duration
+            let startTime = AVAudioTime.seconds(forHostTime: time.hostTime)
+            return PressToTalkTailPolicy.CaptureTiming(
+                startTime: startTime,
+                endTime: startTime + duration,
+                duration: duration
             )
         }
 
-        let callbackHostTime = mach_absolute_time()
-        let durationHostTime = AVAudioTime.hostTime(forSeconds: duration)
-        let startHostTime = callbackHostTime > durationHostTime ? callbackHostTime - durationHostTime : 0
-        return BufferTiming(
-            startHostTime: startHostTime,
-            endHostTime: callbackHostTime,
-            durationSeconds: duration
+        let callbackTime = currentCaptureTime()
+        return PressToTalkTailPolicy.CaptureTiming(
+            startTime: max(0, callbackTime - duration),
+            endTime: callbackTime,
+            duration: duration
         )
     }
 
@@ -411,6 +487,26 @@ final class MoonshineStreamingSession: @unchecked Sendable {
         return sqrt(sumOfSquares / Float(samples.count))
     }
 
+    private static func windowedActivityRMS(
+        for samples: [Float],
+        sampleRate: Double
+    ) -> Float {
+        guard !samples.isEmpty else { return 0 }
+
+        let windowSize = max(1, Int((sampleRate * 0.025).rounded()))
+        var bestRMS: Float = 0
+        var index = 0
+
+        while index < samples.count {
+            let endIndex = min(samples.count, index + windowSize)
+            let window = Array(samples[index..<endIndex])
+            bestRMS = max(bestRMS, rootMeanSquare(for: window))
+            index += windowSize
+        }
+
+        return bestRMS
+    }
+
     private static func buildRawTranscript(from transcript: Transcript) -> RawTranscript {
         let segments = transcript.lines.map { line in
             TranscriptSegment(
@@ -424,11 +520,16 @@ final class MoonshineStreamingSession: @unchecked Sendable {
             .map(\.text)
             .joined(separator: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        let deduplicatedText = ConsecutivePhraseDeduplicator.collapse(text)
 
         let durationMS = Int(
             (transcript.lines.last.map { $0.startTime + $0.duration } ?? 0) * 1_000
         )
-        return RawTranscript(text: text, segments: segments, durationMS: durationMS)
+        return RawTranscript(text: deduplicatedText, segments: segments, durationMS: durationMS)
+    }
+
+    private func currentCaptureTime() -> TimeInterval {
+        AVAudioTime.seconds(forHostTime: mach_absolute_time())
     }
 
     private func ensureMicrophonePermission() throws {
@@ -455,104 +556,118 @@ final class MoonshineStreamingSession: @unchecked Sendable {
     }
 }
 
-private struct BufferTiming: Sendable {
-    let startHostTime: UInt64
-    let endHostTime: UInt64
-    let durationSeconds: TimeInterval
-}
-
-private struct CaptureDecision: Sendable {
-    let allowedDuration: TimeInterval
-}
-
 private final class CaptureStopState: @unchecked Sendable {
-    struct Snapshot: Sendable {
-        let stopRequestedHostTime: UInt64?
-        let lastTapHostTime: UInt64
-        let lastAudibleHostTime: UInt64
-        let pendingAudioBuffers: Int
-    }
-
     private let lock = NSLock()
-    private var stopRequestedHostTime: UInt64?
-    private var lastTapHostTime: UInt64 = 0
-    private var lastAudibleHostTime: UInt64 = 0
-    private var pendingAudioBuffers: Int = 0
+    private var policy: PressToTalkTailPolicy
+
+    init(configuration: PressToTalkTailPolicy.Configuration) {
+        policy = PressToTalkTailPolicy(configuration: configuration)
+    }
 
     func reset() {
         lock.lock()
-        stopRequestedHostTime = nil
-        lastTapHostTime = 0
-        lastAudibleHostTime = 0
-        pendingAudioBuffers = 0
+        policy.reset()
         lock.unlock()
     }
 
-    func requestStop() {
+    func requestStop(at time: TimeInterval) {
         lock.lock()
-        stopRequestedHostTime = mach_absolute_time()
+        policy.requestStop(at: time)
         lock.unlock()
     }
 
-    func captureDecision(for timing: BufferTiming) -> CaptureDecision {
+    func captureDecision(
+        for timing: PressToTalkTailPolicy.CaptureTiming
+    ) -> PressToTalkTailPolicy.CaptureDecision {
         lock.lock()
-        let stopRequestedHostTime = stopRequestedHostTime
+        let decision = policy.captureDecision(for: timing)
         lock.unlock()
-
-        guard let stopRequestedHostTime else {
-            return CaptureDecision(allowedDuration: timing.durationSeconds)
-        }
-
-        let cutoffHostTime = stopRequestedHostTime &+ AVAudioTime.hostTime(forSeconds: 0.32)
-
-        if timing.startHostTime >= cutoffHostTime {
-            return CaptureDecision(allowedDuration: 0)
-        }
-
-        if timing.endHostTime <= cutoffHostTime {
-            return CaptureDecision(allowedDuration: timing.durationSeconds)
-        }
-
-        let allowedHostTime = cutoffHostTime &- timing.startHostTime
-        let allowedDuration = max(0, min(timing.durationSeconds, AVAudioTime.seconds(forHostTime: allowedHostTime)))
-        return CaptureDecision(allowedDuration: allowedDuration)
+        return decision
     }
 
     func noteTap(
-        timing: BufferTiming,
+        timing: PressToTalkTailPolicy.CaptureTiming,
         acceptedDuration: TimeInterval,
-        rms: Float,
-        speechActivityFloor: Float
+        rms: Float
     ) {
         lock.lock()
-        lastTapHostTime = timing.endHostTime
-        if acceptedDuration > 0, rms >= speechActivityFloor {
-            lastAudibleHostTime = timing.endHostTime
-        }
+        policy.noteAcceptedAudio(timing: timing, acceptedDuration: acceptedDuration, rms: rms)
         lock.unlock()
     }
 
     func incrementPendingAudioBuffers() {
         lock.lock()
-        pendingAudioBuffers += 1
+        policy.incrementPendingAudioBuffers()
         lock.unlock()
     }
 
     func decrementPendingAudioBuffers() {
         lock.lock()
-        pendingAudioBuffers = max(0, pendingAudioBuffers - 1)
+        policy.decrementPendingAudioBuffers()
         lock.unlock()
     }
 
-    func snapshot() -> Snapshot {
+    func shouldFinishWaiting(at time: TimeInterval) -> Bool {
         lock.lock()
-        let snapshot = Snapshot(
-            stopRequestedHostTime: stopRequestedHostTime,
-            lastTapHostTime: lastTapHostTime,
-            lastAudibleHostTime: lastAudibleHostTime,
-            pendingAudioBuffers: pendingAudioBuffers,
-        )
+        let shouldFinish = policy.shouldFinishWaiting(at: time)
         lock.unlock()
-        return snapshot
+        return shouldFinish
+    }
+
+    var hasPendingStopRequest: Bool {
+        lock.lock()
+        let hasPendingStopRequest = policy.snapshot().stopRequestedTime != nil
+        lock.unlock()
+        return hasPendingStopRequest
+    }
+
+    var snapshotDescription: String {
+        lock.lock()
+        let snapshot = policy.snapshot()
+        lock.unlock()
+        return "stopRequested=\(snapshot.stopRequestedTime.map { String(format: "%.3f", $0) } ?? "nil") lastBuffer=\(String(format: "%.3f", snapshot.lastBufferTime)) lastAudible=\(String(format: "%.3f", snapshot.lastAudibleTime)) pending=\(snapshot.pendingAudioBuffers)"
+    }
+}
+
+private final class StreamingStopDiagnostics: @unchecked Sendable {
+    private let lock = NSLock()
+    private var lines: [String] = []
+    private let sessionID = UUID().uuidString
+
+    func reset() {
+        lock.lock()
+        lines.removeAll(keepingCapacity: true)
+        lock.unlock()
+    }
+
+    func record(_ message: String) {
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+        lock.lock()
+        lines.append("[\(timestamp)] \(message)")
+        if lines.count > 500 {
+            lines.removeFirst(lines.count - 500)
+        }
+        lock.unlock()
+    }
+
+    func flush() {
+        lock.lock()
+        let content = lines.joined(separator: "\n")
+        lock.unlock()
+
+        guard !content.isEmpty else { return }
+
+        let fileManager = FileManager.default
+        let baseDirectory = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("Voce/Diagnostics", isDirectory: true)
+        guard let directory = baseDirectory else { return }
+
+        do {
+            try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+            let logURL = directory.appendingPathComponent("live-stop-\(sessionID).log")
+            try content.write(to: logURL, atomically: true, encoding: .utf8)
+        } catch {
+            return
+        }
     }
 }

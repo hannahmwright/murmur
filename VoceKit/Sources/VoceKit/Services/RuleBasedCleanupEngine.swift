@@ -14,15 +14,20 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
         profile: StyleProfile,
         lexicon: PersonalLexicon
     ) async throws -> CleanTranscript {
+        let normalizedRaw = RawTranscript(
+            text: ConsecutivePhraseDeduplicator.collapse(raw.text),
+            segments: raw.segments,
+            durationMS: raw.durationMS
+        )
         let generator = RuleBasedCleanupCandidateGenerator()
         let candidates = try await generator.generateCandidates(
-            raw: raw,
+            raw: normalizedRaw,
             profile: profile,
             lexicon: lexicon
         )
         let ranker = LocalCleanupRanker(wordFrequencies: wordFrequencies)
         let best = ranker.bestCandidate(
-            rawText: raw.text,
+            rawText: normalizedRaw.text,
             candidates: candidates,
             profile: profile
         )
@@ -41,7 +46,7 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
         lexicon: PersonalLexicon,
         rulePathID: String
     ) -> CleanupCandidate {
-        var text = raw.text
+        var text = ConsecutivePhraseDeduplicator.collapse(raw.text)
         var edits: [TranscriptEdit] = []
         var removedFillers: [String] = []
 
@@ -101,7 +106,10 @@ public struct RuleBasedCleanupEngine: CleanupEngine, Sendable {
 
         let specs: [(String, String)] = [
             ("you know", "(?i)(?:\\s|^)you know(?!\\s+\(youKnowSafe)(?:\\s|[,.!?]|$))(?=\\s|[,.!?]|$)"),
-            ("i mean", "(?i)(?:\\s|^)i mean(?!\\s+\(iMeanSafe)(?:\\s|[,.!?]|$))(?=\\s|[,.!?]|$)"),
+            // Preserve meaning-bearing phrases such as "that's what I mean" and
+            // "you know what I mean" by refusing to treat "I mean" as filler
+            // when it is preceded by "what ".
+            ("i mean", "(?i)(?:\\s|^)(?<!what\\s)i mean(?!\\s+\(iMeanSafe)(?:\\s|[,.!?]|$))(?=\\s|[,.!?]|$)"),
             ("sort of", "(?i)(?:\\s|^)sort of(?!\\s+\(ofSafe)(?:\\s|[,.!?]|$))(?=\\s|[,.!?]|$)"),
             ("kind of", "(?i)(?:\\s|^)kind of(?!\\s+\(ofSafe)(?:\\s|[,.!?]|$))(?=\\s|[,.!?]|$)"),
             ("basically", "(?i)(?:\\s|^)basically(?!\\s+\(basicallySafe)(?:\\s|[,.!?]|$))(?=\\s|[,.!?]|$)"),

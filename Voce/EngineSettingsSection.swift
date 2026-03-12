@@ -21,6 +21,11 @@ struct EngineSettingsSection: View {
                 preferences.dictation.modelDirectoryPath = MoonshineModelPaths.defaultModelDirectoryPath(for: newArch)
             }
 
+            Toggle("Keep model warmed in memory", isOn: $preferences.dictation.keepModelWarm)
+            Text("Faster recording start, higher idle memory use.")
+                .font(VoceDesign.caption())
+                .foregroundStyle(VoceDesign.textSecondary)
+
             if modelIsReady {
                 modelReadySection
             } else {
